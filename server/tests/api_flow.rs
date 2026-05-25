@@ -264,7 +264,7 @@ async fn reel_next_requires_auth_before_consuming_queue() {
 }
 
 #[tokio::test]
-async fn reel_previous_returns_the_prior_history_item() {
+async fn reel_previous_walks_back_through_view_history() {
     let app = git_reel_server::build_test_app().await.unwrap();
 
     let connect = Request::post("/api/auth/dev-connect")
@@ -296,6 +296,16 @@ async fn reel_previous_returns_the_prior_history_item() {
         .unwrap();
     let second_payload: Value = serde_json::from_slice(&second_body).unwrap();
 
+    let third_response = app
+        .clone()
+        .oneshot(Request::post("/api/reel/next").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let third_body = axum::body::to_bytes(third_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let third_payload: Value = serde_json::from_slice(&third_body).unwrap();
+
     let previous_response = app
         .clone()
         .oneshot(
@@ -311,7 +321,7 @@ async fn reel_previous_returns_the_prior_history_item() {
     let previous_payload: Value = serde_json::from_slice(&previous_body).unwrap();
     assert_eq!(
         previous_payload["repository"]["id"],
-        first_payload["repository"]["id"]
+        second_payload["repository"]["id"]
     );
 
     let previous_response = app
@@ -328,7 +338,11 @@ async fn reel_previous_returns_the_prior_history_item() {
     let previous_payload: Value = serde_json::from_slice(&previous_body).unwrap();
     assert_eq!(
         previous_payload["repository"]["id"],
-        second_payload["repository"]["id"]
+        first_payload["repository"]["id"]
+    );
+    assert_ne!(
+        third_payload["repository"]["id"],
+        previous_payload["repository"]["id"]
     );
 }
 

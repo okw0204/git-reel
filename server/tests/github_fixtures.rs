@@ -22,3 +22,10 @@ fn extracts_graphql_readme_preview() {
         Some("# Git Reel\n\nA local-first discovery app.".to_string())
     );
 }
+
+#[test]
+fn returns_none_for_nullable_graphql_repository() {
+    let fixture = r#"{"data":{"repository":null}}"#;
+    let preview = parse_graphql_readme_preview(fixture).unwrap();
+    assert_eq!(preview, None);
+}

@@ -26,9 +26,9 @@ export function ReelScreen({ auth, onAuthChange }: ReelScreenProps) {
   };
 
   const loadCurrent = useCallback(async () => {
-    const payload = await api.current();
+    const payload = auth.connected ? await api.next() : await api.current();
     applyReel(payload);
-  }, []);
+  }, [auth.connected]);
 
   useEffect(() => {
     void loadCurrent();
@@ -37,8 +37,6 @@ export function ReelScreen({ auth, onAuthChange }: ReelScreenProps) {
   const connect = async () => {
     const nextAuth = await api.devConnect();
     onAuthChange(nextAuth);
-    const payload = await api.next();
-    applyReel(payload);
   };
 
   const next = useCallback(async () => {

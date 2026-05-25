@@ -63,7 +63,11 @@ impl RepositoryStore {
         self.find_by_normalized_name(&normalized).await
     }
 
-    pub async fn record_event(&self, repository_id: i64, kind: RepoEventKind) -> Result<(), ApiError> {
+    pub async fn record_event(
+        &self,
+        repository_id: i64,
+        kind: RepoEventKind,
+    ) -> Result<(), ApiError> {
         sqlx::query("INSERT INTO repo_events (repository_id, kind) VALUES (?, ?)")
             .bind(repository_id)
             .bind(kind.as_str())
@@ -103,11 +107,58 @@ impl RepositoryStore {
             .collect()
     }
 
+    pub async fn previous_reel_repository(&self) -> Result<Option<Repository>, ApiError> {
+        let current_repository_id: Option<i64> = sqlx::query_scalar(
+            r#"
+            SELECT repository_id
+            FROM repo_events
+            WHERE kind IN (?, ?)
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(RepoEventKind::Viewed.as_str())
+        .bind(RepoEventKind::Returned.as_str())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let Some(current_repository_id) = current_repository_id else {
+            return Ok(None);
+        };
+
+        let rows = sqlx::query(
+            r#"
+            SELECT r.*
+            FROM repo_events e
+            JOIN repositories r ON r.id = e.repository_id
+            WHERE e.kind = ?
+            ORDER BY e.id DESC
+            "#,
+        )
+        .bind(RepoEventKind::Viewed.as_str())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut found_current = false;
+        for row in rows {
+            let repository = repository_from_row(&row)?;
+            if found_current {
+                return Ok(Some(repository));
+            }
+            if repository.id == current_repository_id {
+                found_current = true;
+            }
+        }
+
+        Ok(None)
+    }
+
     pub async fn has_prior_interaction(&self, repository_id: i64) -> Result<bool, ApiError> {
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM repo_events WHERE repository_id = ?")
-            .bind(repository_id)
-            .fetch_one(&self.pool)
-            .await?;
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM repo_events WHERE repository_id = ?")
+                .bind(repository_id)
+                .fetch_one(&self.pool)
+                .await?;
         Ok(count > 0)
     }
 
@@ -130,16 +181,23 @@ impl RepositoryStore {
         Ok(result.last_insert_rowid())
     }
 
-    pub async fn enqueue_repository(&self, repository_id: i64, batch_id: i64) -> Result<(), ApiError> {
-        let next_position: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(position), 0) + 1 FROM discovery_queue")
-            .fetch_one(&self.pool)
-            .await?;
-        sqlx::query("INSERT INTO discovery_queue (repository_id, batch_id, position) VALUES (?, ?, ?)")
-            .bind(repository_id)
-            .bind(batch_id)
-            .bind(next_position)
-            .execute(&self.pool)
-            .await?;
+    pub async fn enqueue_repository(
+        &self,
+        repository_id: i64,
+        batch_id: i64,
+    ) -> Result<(), ApiError> {
+        let next_position: i64 =
+            sqlx::query_scalar("SELECT COALESCE(MAX(position), 0) + 1 FROM discovery_queue")
+                .fetch_one(&self.pool)
+                .await?;
+        sqlx::query(
+            "INSERT INTO discovery_queue (repository_id, batch_id, position) VALUES (?, ?, ?)",
+        )
+        .bind(repository_id)
+        .bind(batch_id)
+        .bind(next_position)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -236,7 +294,11 @@ impl RepositoryStore {
         Ok(())
     }
 
-    pub async fn replace_tags(&self, repository_id: i64, tags: Vec<String>) -> Result<(), ApiError> {
+    pub async fn replace_tags(
+        &self,
+        repository_id: i64,
+        tags: Vec<String>,
+    ) -> Result<(), ApiError> {
         let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM repo_tags WHERE repository_id = ?")
             .bind(repository_id)

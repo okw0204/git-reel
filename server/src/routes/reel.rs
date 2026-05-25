@@ -66,8 +66,7 @@ async fn next(State(state): State<AppState>) -> Result<Json<ReelResponse>, ApiEr
 }
 
 async fn previous(State(state): State<AppState>) -> Result<Json<ReelResponse>, ApiError> {
-    let history = state.repositories.history().await?;
-    let repository = history.get(1).map(|item| item.repository.clone());
+    let repository = state.repositories.previous_reel_repository().await?;
     if let Some(repo) = repository.as_ref() {
         state
             .repositories

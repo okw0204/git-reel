@@ -45,7 +45,7 @@ struct GraphQlResponse {
 
 #[derive(Deserialize)]
 struct GraphQlData {
-    repository: GraphQlRepository,
+    repository: Option<GraphQlRepository>,
 }
 
 #[derive(Deserialize)]
@@ -83,5 +83,9 @@ pub fn parse_search_response(body: &str) -> Result<Vec<NewRepository>, GitHubErr
 
 pub fn parse_graphql_readme_preview(body: &str) -> Result<Option<String>, GitHubError> {
     let response: GraphQlResponse = serde_json::from_str(body)?;
-    Ok(response.data.repository.object.map(|object| object.text))
+    Ok(response
+        .data
+        .repository
+        .and_then(|repository| repository.object)
+        .map(|object| object.text))
 }
