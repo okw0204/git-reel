@@ -58,7 +58,10 @@ async fn records_history_events() {
         .await
         .unwrap();
 
-    store.record_event(repo.id, RepoEventKind::Viewed).await.unwrap();
+    store
+        .record_event(repo.id, RepoEventKind::Viewed)
+        .await
+        .unwrap();
     store
         .record_event(repo.id, RepoEventKind::Skipped)
         .await
@@ -155,12 +158,121 @@ async fn reel_next_save_and_skip_record_events() {
     let save = Request::post(format!("/api/reel/{id}/save"))
         .body(Body::empty())
         .unwrap();
-    assert_eq!(app.clone().oneshot(save).await.unwrap().status(), StatusCode::OK);
+    assert_eq!(
+        app.clone().oneshot(save).await.unwrap().status(),
+        StatusCode::OK
+    );
 
     let skip = Request::post(format!("/api/reel/{id}/skip"))
         .body(Body::empty())
         .unwrap();
     assert_eq!(app.oneshot(skip).await.unwrap().status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn reel_next_requires_auth_before_consuming_queue() {
+    let app = git_reel_server::build_test_app().await.unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(Request::post("/api/reel/next").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    assert!(payload["repository"].is_null());
+    assert_eq!(payload["empty_reason"], "auth_required");
+
+    let connect = Request::post("/api/auth/dev-connect")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"username":"local-dev"}"#))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(connect).await.unwrap().status(),
+        StatusCode::OK
+    );
+
+    let response = app
+        .oneshot(Request::post("/api/reel/next").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(payload["repository"]["full_name"], "rust-lang/rust");
+}
+
+#[tokio::test]
+async fn reel_previous_returns_the_prior_history_item() {
+    let app = git_reel_server::build_test_app().await.unwrap();
+
+    let connect = Request::post("/api/auth/dev-connect")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"username":"local-dev"}"#))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(connect).await.unwrap().status(),
+        StatusCode::OK
+    );
+
+    let first_response = app
+        .clone()
+        .oneshot(Request::post("/api/reel/next").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let first_body = axum::body::to_bytes(first_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let first_payload: Value = serde_json::from_slice(&first_body).unwrap();
+
+    let second_response = app
+        .clone()
+        .oneshot(Request::post("/api/reel/next").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let second_body = axum::body::to_bytes(second_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let second_payload: Value = serde_json::from_slice(&second_body).unwrap();
+
+    let previous_response = app
+        .clone()
+        .oneshot(
+            Request::post("/api/reel/previous")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let previous_body = axum::body::to_bytes(previous_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let previous_payload: Value = serde_json::from_slice(&previous_body).unwrap();
+    assert_eq!(
+        previous_payload["repository"]["id"],
+        first_payload["repository"]["id"]
+    );
+
+    let previous_response = app
+        .oneshot(
+            Request::post("/api/reel/previous")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let previous_body = axum::body::to_bytes(previous_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let previous_payload: Value = serde_json::from_slice(&previous_body).unwrap();
+    assert_eq!(
+        previous_payload["repository"]["id"],
+        second_payload["repository"]["id"]
+    );
 }
 
 #[tokio::test]
@@ -174,10 +286,7 @@ async fn saved_repositories_support_notes_and_tags() {
     store.save_repository(repo.id).await.unwrap();
     store.set_note(repo.id, "週末に試す").await.unwrap();
     store
-        .replace_tags(
-            repo.id,
-            vec!["rust".to_string(), "local-first".to_string()],
-        )
+        .replace_tags(repo.id, vec!["rust".to_string(), "local-first".to_string()])
         .await
         .unwrap();
 

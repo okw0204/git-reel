@@ -44,6 +44,12 @@ async fn current(State(state): State<AppState>) -> Result<Json<ReelResponse>, Ap
 }
 
 async fn next(State(state): State<AppState>) -> Result<Json<ReelResponse>, ApiError> {
+    if !auth_connected(&state).await? {
+        return Ok(Json(ReelResponse {
+            repository: None,
+            empty_reason: Some("auth_required".to_string()),
+        }));
+    }
     DiscoveryService::new(state.repositories.clone())
         .seed_if_empty()
         .await?;
@@ -68,7 +74,7 @@ async fn next(State(state): State<AppState>) -> Result<Json<ReelResponse>, ApiEr
 
 async fn previous(State(state): State<AppState>) -> Result<Json<ReelResponse>, ApiError> {
     let history = state.repositories.history().await?;
-    let repository = history.first().map(|item| item.repository.clone());
+    let repository = history.get(1).map(|item| item.repository.clone());
     if let Some(repo) = repository.as_ref() {
         state
             .repositories
@@ -120,9 +126,10 @@ async fn detail(
 }
 
 async fn auth_connected(state: &AppState) -> Result<bool, ApiError> {
-    let connected: Option<i64> = sqlx::query_scalar("SELECT connected FROM auth_state WHERE id = 1")
-        .fetch_optional(&state.pool)
-        .await?;
+    let connected: Option<i64> =
+        sqlx::query_scalar("SELECT connected FROM auth_state WHERE id = 1")
+            .fetch_optional(&state.pool)
+            .await?;
     Ok(connected.unwrap_or(0) == 1)
 }
 
