@@ -53,14 +53,7 @@ async fn next(State(state): State<AppState>) -> Result<Json<ReelResponse>, ApiEr
     DiscoveryService::new(state.repositories.clone())
         .seed_if_empty()
         .await?;
-    let repository = state.repositories.next_queued_repository().await?;
-    if let Some(repo) = repository.as_ref() {
-        state.repositories.consume_repository(repo.id).await?;
-        state
-            .repositories
-            .record_event(repo.id, RepoEventKind::Viewed)
-            .await?;
-    }
+    let repository = state.repositories.claim_next_queued_repository().await?;
     let empty_reason = if repository.is_none() {
         Some("queue_empty".to_string())
     } else {

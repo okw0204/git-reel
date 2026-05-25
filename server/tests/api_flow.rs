@@ -134,6 +134,63 @@ async fn discovery_queue_excludes_viewed_and_skipped_repositories() {
 }
 
 #[tokio::test]
+async fn discovery_queue_deduplicates_candidates_in_one_batch() {
+    let pool = connect(&Config::test()).await.unwrap();
+    let store = RepositoryStore::new(pool);
+    let service = DiscoveryService::new(store.clone());
+
+    let accepted = service
+        .enqueue_candidates(
+            "test-strategy",
+            "duplicate candidates",
+            vec![
+                DiscoveryCandidate::from_new_repository(sample_repo("acme/duplicate", 203)),
+                DiscoveryCandidate::from_new_repository(sample_repo("acme/duplicate", 203)),
+                DiscoveryCandidate::from_new_repository(sample_repo("acme/fresh", 204)),
+            ],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(accepted, 2);
+    let first = store.claim_next_queued_repository().await.unwrap().unwrap();
+    let second = store.claim_next_queued_repository().await.unwrap().unwrap();
+    let empty = store.claim_next_queued_repository().await.unwrap();
+
+    assert_eq!(first.full_name, "acme/duplicate");
+    assert_eq!(second.full_name, "acme/fresh");
+    assert!(empty.is_none());
+}
+
+#[tokio::test]
+async fn claim_next_queued_repository_consumes_each_row_once() {
+    let pool = connect(&Config::test()).await.unwrap();
+    let store = RepositoryStore::new(pool);
+    let service = DiscoveryService::new(store.clone());
+
+    service
+        .enqueue_candidates(
+            "test-strategy",
+            "atomic claim",
+            vec![
+                DiscoveryCandidate::from_new_repository(sample_repo("acme/first-claim", 205)),
+                DiscoveryCandidate::from_new_repository(sample_repo("acme/second-claim", 206)),
+            ],
+        )
+        .await
+        .unwrap();
+
+    let first = store.claim_next_queued_repository().await.unwrap().unwrap();
+    let second = store.claim_next_queued_repository().await.unwrap().unwrap();
+    let empty = store.claim_next_queued_repository().await.unwrap();
+
+    assert_eq!(first.full_name, "acme/first-claim");
+    assert_eq!(second.full_name, "acme/second-claim");
+    assert_ne!(first.id, second.id);
+    assert!(empty.is_none());
+}
+
+#[tokio::test]
 async fn reel_next_save_and_skip_record_events() {
     let app = git_reel_server::build_test_app().await.unwrap();
 

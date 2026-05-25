@@ -162,6 +162,45 @@ impl RepositoryStore {
         }
     }
 
+    pub async fn claim_next_queued_repository(&self) -> Result<Option<Repository>, ApiError> {
+        let mut tx = self.pool.begin().await?;
+        let repository_id: Option<i64> = sqlx::query_scalar(
+            r#"
+            UPDATE discovery_queue
+            SET consumed_at = CURRENT_TIMESTAMP
+            WHERE id = (
+              SELECT id
+              FROM discovery_queue
+              WHERE consumed_at IS NULL
+              ORDER BY position ASC
+              LIMIT 1
+            )
+            RETURNING repository_id
+            "#,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let Some(repository_id) = repository_id else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+
+        sqlx::query("INSERT INTO repo_events (repository_id, kind) VALUES (?, ?)")
+            .bind(repository_id)
+            .bind(RepoEventKind::Viewed.as_str())
+            .execute(&mut *tx)
+            .await?;
+
+        let row = sqlx::query("SELECT * FROM repositories WHERE id = ?")
+            .bind(repository_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let repository = repository_from_row(&row)?;
+        tx.commit().await?;
+        Ok(Some(repository))
+    }
+
     pub async fn consume_repository(&self, repository_id: i64) -> Result<(), ApiError> {
         sqlx::query(
             "UPDATE discovery_queue SET consumed_at = CURRENT_TIMESTAMP WHERE repository_id = ? AND consumed_at IS NULL",
