@@ -23,11 +23,7 @@ async fn settings(State(state): State<AppState>) -> Result<Json<SettingsResponse
     Ok(Json(SettingsResponse {
         auth_connected: row.as_ref().map(|r| r.0 == 1).unwrap_or(false),
         username: row.and_then(|r| r.1),
-        discovery_mix: vec![
-            "recently_updated",
-            "recently_created",
-            "language_rotation",
-        ],
+        discovery_mix: vec!["recently_updated", "recently_created", "language_rotation"],
         database: "sqlite",
     }))
 }

@@ -21,6 +21,7 @@ pub fn router() -> Router<AppState> {
         .route("/:id/detail", get(detail))
 }
 
+// current はプレビュー用なので、キューを消費せず現在の先頭候補だけを返す。
 async fn current(State(state): State<AppState>) -> Result<Json<ReelResponse>, ApiError> {
     if !auth_connected(&state).await? {
         return Ok(Json(ReelResponse {
@@ -43,6 +44,7 @@ async fn current(State(state): State<AppState>) -> Result<Json<ReelResponse>, Ap
     }))
 }
 
+// next はユーザーが候補を見た操作として扱い、キュー消費と viewed 記録を行う。
 async fn next(State(state): State<AppState>) -> Result<Json<ReelResponse>, ApiError> {
     if !auth_connected(&state).await? {
         return Ok(Json(ReelResponse {
@@ -65,6 +67,7 @@ async fn next(State(state): State<AppState>) -> Result<Json<ReelResponse>, ApiEr
     }))
 }
 
+// 戻った履歴もイベント化しておくと、以後の「前へ」の現在地として使える。
 async fn previous(State(state): State<AppState>) -> Result<Json<ReelResponse>, ApiError> {
     let repository = state.repositories.previous_reel_repository().await?;
     if let Some(repo) = repository.as_ref() {
@@ -99,6 +102,7 @@ async fn skip(
     Ok(Json(ActionResponse { ok: true }))
 }
 
+// 詳細を開いたことも軽い関心シグナルとして保存する。
 async fn detail(
     State(state): State<AppState>,
     Path(id): Path<i64>,

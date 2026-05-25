@@ -8,6 +8,7 @@ export function SavedScreen() {
   const [items, setItems] = useState<SavedRepository[]>([]);
 
   useEffect(() => {
+    // 入力のたびに即検索せず、短く待ってから API に問い合わせる。
     const timer = window.setTimeout(() => {
       void api.saved(query).then(setItems);
     }, 120);

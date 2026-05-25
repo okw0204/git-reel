@@ -14,6 +14,7 @@ export default function App() {
   const [auth, setAuth] = useState<AuthState>({ connected: false, username: null });
 
   useEffect(() => {
+    // 初期表示時にローカルの接続状態を復元し、リール画面の空状態を決める。
     void api.authState().then(setAuth);
   }, []);
 

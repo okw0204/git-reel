@@ -1,5 +1,6 @@
 import type { AuthState, HistoryItem, ReelResponse, RepositoryDetail, SavedRepository, SettingsSummary } from "../types";
 
+// API 呼び出しをここに集約し、画面側はレスポンス型と操作名だけを意識する。
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     headers: { "content-type": "application/json", ...(init?.headers ?? {}) },

@@ -22,6 +22,7 @@ export function useKeyboardShortcuts({
 
     const handleKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
+      // メモやタグ入力中は文字入力を優先し、リール操作のショートカットを発火させない。
       if (target?.closest("input, textarea, [contenteditable=true]")) return;
 
       if (event.key === "j" || event.key === "ArrowRight") onNext();

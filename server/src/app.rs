@@ -17,6 +17,7 @@ pub async fn build_test_app() -> anyhow::Result<Router> {
     build_app_with_config(Config::test()).await
 }
 
+// 本番用とテスト用で同じルーター構築経路を通し、差分を Config に閉じ込める。
 async fn build_app_with_config(config: Config) -> anyhow::Result<Router> {
     let pool = connect(&config).await?;
     let state = AppState {
@@ -24,6 +25,7 @@ async fn build_app_with_config(config: Config) -> anyhow::Result<Router> {
         pool,
     };
 
+    // フロントエンドからは /api/* だけを見ればよいように、機能単位でルートを分ける。
     Ok(Router::new()
         .route("/api/health", get(|| async { "ok" }))
         .nest("/api/auth", routes::auth::router())

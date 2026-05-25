@@ -34,6 +34,7 @@ async fn auth_state(State(state): State<AppState>) -> Result<Json<AuthStateRespo
     }))
 }
 
+// 実 OAuth の代わりにローカル状態だけを接続済みにする、開発用の入口。
 async fn dev_connect(
     State(state): State<AppState>,
     Json(payload): Json<DevConnectRequest>,

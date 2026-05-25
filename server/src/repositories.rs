@@ -15,6 +15,7 @@ impl RepositoryStore {
     }
 
     pub async fn upsert_repository(&self, repo: NewRepository) -> Result<Repository, ApiError> {
+        // GitHub id が変わらないケースを優先しつつ、表示名の表記ゆれにも備えて正規化名を保持する。
         let normalized = normalize_full_name(&repo.full_name);
         let topics_json = serde_json::to_string(&repo.topics)?;
 
@@ -77,6 +78,7 @@ impl RepositoryStore {
     }
 
     pub async fn history(&self) -> Result<Vec<HistoryItem>, ApiError> {
+        // 履歴画面では各リポジトリの最新イベントだけを見せ、同じリポジトリの重複表示を避ける。
         let rows = sqlx::query(
             r#"
             SELECT r.*, e.kind AS latest_kind, e.created_at AS latest_event_at
@@ -108,6 +110,7 @@ impl RepositoryStore {
     }
 
     pub async fn previous_reel_repository(&self) -> Result<Option<Repository>, ApiError> {
+        // 「前へ」は直近の viewed/returned を現在地として、その一つ前の viewed を探す。
         let current_repository_id: Option<i64> = sqlx::query_scalar(
             r#"
             SELECT repository_id
@@ -186,6 +189,7 @@ impl RepositoryStore {
         repository_id: i64,
         batch_id: i64,
     ) -> Result<(), ApiError> {
+        // キューの順序は discovery_batches とは独立した単調増加の position で扱う。
         let next_position: i64 =
             sqlx::query_scalar("SELECT COALESCE(MAX(position), 0) + 1 FROM discovery_queue")
                 .fetch_one(&self.pool)
@@ -221,6 +225,7 @@ impl RepositoryStore {
     }
 
     pub async fn claim_next_queued_repository(&self) -> Result<Option<Repository>, ApiError> {
+        // キュー消費と viewed イベント記録は同じトランザクションにして、表示済み判定のズレを防ぐ。
         let mut tx = self.pool.begin().await?;
         let repository_id: Option<i64> = sqlx::query_scalar(
             r#"
@@ -304,6 +309,7 @@ impl RepositoryStore {
             .bind(repository_id)
             .execute(&mut *tx)
             .await?;
+        // タグは大文字小文字を区別せず保存し、同じ意味のタグが増えないようにする。
         for tag in tags {
             let normalized = tag.trim().to_ascii_lowercase();
             if normalized.is_empty() {
@@ -328,6 +334,7 @@ impl RepositoryStore {
     }
 
     pub async fn saved(&self, query: &str) -> Result<Vec<SavedRepository>, ApiError> {
+        // 保存済み検索は MVP では名前と説明に絞り、タグ検索は後で拡張しやすい形に残す。
         let like = format!("%{}%", query.to_ascii_lowercase());
         let rows = sqlx::query(
             r#"

@@ -28,6 +28,7 @@ impl DiscoveryService {
         query: &str,
         candidates: Vec<DiscoveryCandidate>,
     ) -> Result<usize, ApiError> {
+        // DB への upsert 後の id で判定し、GitHub id と owner/name の両方の重複を吸収する。
         let mut accepted_ids = Vec::new();
         let mut accepted_seen = HashSet::new();
         for candidate in candidates.iter() {
@@ -38,11 +39,13 @@ impl DiscoveryService {
             if accepted_seen.contains(&repo.id) {
                 continue;
             }
+            // 既に見た・保存した・スキップした候補は通常のリールへ戻さない。
             if !self.store.has_prior_interaction(repo.id).await? {
                 accepted_seen.insert(repo.id);
                 accepted_ids.push(repo.id);
             }
         }
+        // 候補数と採用数を残しておくと、後から発見ロジックの偏りを確認しやすい。
         let batch_id = self
             .store
             .create_discovery_batch(
@@ -61,6 +64,7 @@ impl DiscoveryService {
     }
 
     pub async fn seed_if_empty(&self) -> Result<(), ApiError> {
+        // MVP では GitHub API 未接続でも体験確認できるよう、空のときだけ固定候補を補充する。
         if self.store.next_queued_repository().await?.is_some() {
             return Ok(());
         }

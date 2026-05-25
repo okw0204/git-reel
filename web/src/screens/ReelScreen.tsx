@@ -20,12 +20,14 @@ export function ReelScreen({ auth, onAuthChange }: ReelScreenProps) {
   const [tagInput, setTagInput] = useState("");
   const [message, setMessage] = useState("");
 
+  // API の空状態と候補を同時に反映し、認証待ち・候補なしの表示分岐を一箇所に寄せる。
   const applyReel = (payload: ReelResponse) => {
     setRepository(payload.repository);
     setEmptyReason(payload.empty_reason ?? null);
   };
 
   const loadCurrent = useCallback(async () => {
+    // 接続直後は最初の候補を viewed として扱いたいので、接続済みなら next を使う。
     const payload = auth.connected ? await api.next() : await api.current();
     applyReel(payload);
   }, [auth.connected]);
@@ -65,6 +67,7 @@ export function ReelScreen({ auth, onAuthChange }: ReelScreenProps) {
   }, [repository]);
 
   const toggleDetail = useCallback(async () => {
+    // ドロワーを開く瞬間だけ詳細を取得し、閉じるだけの操作では余計な API 呼び出しをしない。
     if (!repository) return;
     if (!detailOpen) {
       const payload = await api.detail(repository.id);
@@ -82,6 +85,7 @@ export function ReelScreen({ auth, onAuthChange }: ReelScreenProps) {
   };
 
   const saveTags = async () => {
+    // 入力はカンマ区切りに限定し、永続化前に空要素を取り除く。
     if (!repository) return;
     const tags = tagInput.split(",").map((tag) => tag.trim()).filter(Boolean);
     await api.tags(repository.id, tags);

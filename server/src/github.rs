@@ -58,6 +58,7 @@ struct ReadmeObject {
     text: String,
 }
 
+// GitHub のレスポンス型を API 境界で NewRepository に寄せ、DB 層を外部 API の形から切り離す。
 pub fn parse_search_response(body: &str) -> Result<Vec<NewRepository>, GitHubError> {
     let response: SearchResponse = serde_json::from_str(body)?;
     Ok(response
@@ -81,6 +82,7 @@ pub fn parse_search_response(body: &str) -> Result<Vec<NewRepository>, GitHubErr
         .collect())
 }
 
+// README は存在しない・取得できないケースが普通にあるため、失敗ではなく None として扱える形にする。
 pub fn parse_graphql_readme_preview(body: &str) -> Result<Option<String>, GitHubError> {
     let response: GraphQlResponse = serde_json::from_str(body)?;
     Ok(response

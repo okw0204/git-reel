@@ -1,3 +1,4 @@
+-- GitHub 由来のメタデータと、リール表示に必要な軽量プレビューを保持する。
 CREATE TABLE repositories (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   github_id INTEGER UNIQUE,
@@ -18,6 +19,7 @@ CREATE TABLE repositories (
   last_seen_at TEXT
 );
 
+-- ユーザー操作は append-only のイベントとして残し、履歴と重複除外の根拠にする。
 CREATE TABLE repo_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   repository_id INTEGER NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
@@ -58,6 +60,7 @@ CREATE TABLE discovery_batches (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 発見バッチから採用された候補を、表示順付きの消費キューとして管理する。
 CREATE TABLE discovery_queue (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   repository_id INTEGER NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
