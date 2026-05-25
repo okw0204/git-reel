@@ -1,0 +1,140 @@
+use crate::{
+    app::AppState,
+    discovery::DiscoveryService,
+    error::ApiError,
+    models::{ReelResponse, RepoEventKind},
+};
+use axum::{
+    extract::{Path, State},
+    routing::{get, post},
+    Json, Router,
+};
+use serde::Serialize;
+
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .route("/current", get(current))
+        .route("/next", post(next))
+        .route("/previous", post(previous))
+        .route("/:id/save", post(save))
+        .route("/:id/skip", post(skip))
+        .route("/:id/detail", get(detail))
+}
+
+async fn current(State(state): State<AppState>) -> Result<Json<ReelResponse>, ApiError> {
+    if !auth_connected(&state).await? {
+        return Ok(Json(ReelResponse {
+            repository: None,
+            empty_reason: Some("auth_required".to_string()),
+        }));
+    }
+    DiscoveryService::new(state.repositories.clone())
+        .seed_if_empty()
+        .await?;
+    let repository = state.repositories.next_queued_repository().await?;
+    let empty_reason = if repository.is_none() {
+        Some("queue_empty".to_string())
+    } else {
+        None
+    };
+    Ok(Json(ReelResponse {
+        repository,
+        empty_reason,
+    }))
+}
+
+async fn next(State(state): State<AppState>) -> Result<Json<ReelResponse>, ApiError> {
+    if !auth_connected(&state).await? {
+        return Ok(Json(ReelResponse {
+            repository: None,
+            empty_reason: Some("auth_required".to_string()),
+        }));
+    }
+    DiscoveryService::new(state.repositories.clone())
+        .seed_if_empty()
+        .await?;
+    let repository = state.repositories.claim_next_queued_repository().await?;
+    let empty_reason = if repository.is_none() {
+        Some("queue_empty".to_string())
+    } else {
+        None
+    };
+    Ok(Json(ReelResponse {
+        repository,
+        empty_reason,
+    }))
+}
+
+async fn previous(State(state): State<AppState>) -> Result<Json<ReelResponse>, ApiError> {
+    let repository = state.repositories.previous_reel_repository().await?;
+    if let Some(repo) = repository.as_ref() {
+        state
+            .repositories
+            .record_event(repo.id, RepoEventKind::Returned)
+            .await?;
+    }
+    Ok(Json(ReelResponse {
+        repository,
+        empty_reason: None,
+    }))
+}
+
+async fn save(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<ActionResponse>, ApiError> {
+    state.repositories.save_repository(id).await?;
+    Ok(Json(ActionResponse { ok: true }))
+}
+
+async fn skip(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<ActionResponse>, ApiError> {
+    state
+        .repositories
+        .record_event(id, RepoEventKind::Skipped)
+        .await?;
+    state.repositories.consume_repository(id).await?;
+    Ok(Json(ActionResponse { ok: true }))
+}
+
+async fn detail(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<DetailResponse>, ApiError> {
+    state
+        .repositories
+        .record_event(id, RepoEventKind::DetailOpened)
+        .await?;
+    let repository = state.repositories.find_repository(id).await?;
+    Ok(Json(DetailResponse {
+        repository_id: id,
+        memo: state.repositories.note_for(id).await?.unwrap_or_default(),
+        tags: state.repositories.tags_for(id).await?,
+        readme_preview: repository.readme_preview,
+        detail_error: None,
+    }))
+}
+
+async fn auth_connected(state: &AppState) -> Result<bool, ApiError> {
+    let connected: Option<i64> =
+        sqlx::query_scalar("SELECT connected FROM auth_state WHERE id = 1")
+            .fetch_optional(&state.pool)
+            .await?;
+    Ok(connected.unwrap_or(0) == 1)
+}
+
+#[derive(Serialize)]
+struct ActionResponse {
+    ok: bool,
+}
+
+#[derive(Serialize)]
+struct DetailResponse {
+    repository_id: i64,
+    memo: String,
+    tags: Vec<String>,
+    readme_preview: Option<String>,
+    detail_error: Option<String>,
+}

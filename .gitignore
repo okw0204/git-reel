@@ -1,1 +1,12 @@
-.superpowers/
+/node_modules/
+/web/node_modules/
+/web/dist/
+/server/target/
+*.db
+*.db-shm
+*.db-wal
+/.env
+/playwright-report/
+/test-results/
+.superpowers/**/state/
+/web/tsconfig.tsbuildinfo
