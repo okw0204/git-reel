@@ -1,0 +1,22 @@
+{
+  "total_count": 1,
+  "incomplete_results": false,
+  "items": [
+    {
+      "id": 42,
+      "name": "git-reel",
+      "full_name": "okw0204/git-reel",
+      "owner": { "login": "okw0204" },
+      "html_url": "https://github.com/okw0204/git-reel",
+      "description": "Repository discovery reel",
+      "fork": false,
+      "archived": false,
+      "stargazers_count": 25,
+      "forks_count": 2,
+      "language": "Rust",
+      "license": { "spdx_id": "MIT" },
+      "topics": ["github", "discovery"],
+      "updated_at": "2026-05-25T00:00:00Z"
+    }
+  ]
+}

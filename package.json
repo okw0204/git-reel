@@ -1,0 +1,1 @@
+{"name":"git-reel","private":true,"workspaces":["web"],"scripts":{"dev:web":"npm --workspace web run dev","test:web":"npm --workspace web run test -- --run","test:e2e":"playwright test --config e2e/playwright.config.ts","test:server":"cargo test --manifest-path server/Cargo.toml","test":"npm run test:web && npm run test:server"},"devDependencies":{"@playwright/test":"^1.52.0"}}
