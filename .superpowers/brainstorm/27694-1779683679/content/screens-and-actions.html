@@ -1,0 +1,91 @@
+<h2>Screen model and core actions</h2>
+<p class="subtitle">Four screens, with the Reel as the primary place users spend time.</p>
+
+<div class="cards">
+  <div class="card" data-choice="reel" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">Reel</div>
+        <div class="mockup-body" style="display:grid;grid-template-columns:minmax(240px,1fr) 220px;gap:16px;min-height:260px;">
+          <div style="border:1px solid #d9dee8;border-radius:12px;padding:16px;background:white;">
+            <div class="label">current repo</div>
+            <h3>owner/project-name</h3>
+            <p>Description, language, stars, forks, license, update recency, topics.</p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:20px;">
+              <button class="mock-button">Back</button>
+              <button class="mock-button">Skip</button>
+              <button class="mock-button">Save</button>
+              <button class="mock-button">Next</button>
+            </div>
+          </div>
+          <div style="border:1px solid #d9dee8;border-radius:12px;padding:14px;background:#fbfcff;">
+            <div class="label">detail drawer</div>
+            <div class="placeholder" style="height:54px;margin-top:10px;">README summary</div>
+            <input class="mock-input" placeholder="personal tags">
+            <input class="mock-input" placeholder="memo">
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Reel</h3>
+      <p>Default flow. Buttons and keyboard shortcuts both work: next/back/save/skip/open detail.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="saved" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">Saved</div>
+        <div class="mockup-body" style="min-height:260px;display:flex;flex-direction:column;gap:10px;">
+          <div style="display:flex;gap:8px;">
+            <input class="mock-input" placeholder="filter saved repos">
+            <button class="mock-button">Tag</button>
+          </div>
+          <div class="placeholder" style="height:56px;">saved repo with tags and note snippet</div>
+          <div class="placeholder" style="height:56px;">saved repo with tags and note snippet</div>
+          <div class="placeholder" style="height:56px;">saved repo with tags and note snippet</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Saved</h3>
+      <p>Manage the separate "curious" list, including personal tags and notes.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="history" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">History</div>
+        <div class="mockup-body" style="min-height:260px;display:grid;grid-template-columns:1fr;gap:10px;">
+          <div class="placeholder" style="height:52px;">viewed repo: saved</div>
+          <div class="placeholder" style="height:52px;">viewed repo: skipped</div>
+          <div class="placeholder" style="height:52px;">viewed repo: viewed only</div>
+          <div class="placeholder" style="height:52px;">viewed repo: dismissed</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>History</h3>
+      <p>Shows what has already appeared so the app can avoid repeating it and users can recover past finds.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="settings" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">Settings</div>
+        <div class="mockup-body" style="min-height:260px;display:flex;flex-direction:column;gap:12px;">
+          <div class="placeholder" style="height:58px;">GitHub OAuth status</div>
+          <div class="placeholder" style="height:58px;">discovery mix controls</div>
+          <div class="placeholder" style="height:58px;">local database / export</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Settings</h3>
+      <p>Auth status and minimal discovery controls. Keep advanced tuning out of the main flow.</p>
+    </div>
+  </div>
+</div>

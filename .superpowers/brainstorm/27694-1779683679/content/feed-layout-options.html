@@ -1,0 +1,103 @@
+<h2>Which feed layout feels right for Git Reel?</h2>
+<p class="subtitle">Pick the direction that best matches casual discovery without becoming a normal search UI.</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">A: Center Reel</div>
+        <div class="mockup-body" style="min-height:280px;display:grid;grid-template-columns:72px minmax(240px,1fr) 72px;gap:16px;align-items:center;">
+          <div style="display:flex;flex-direction:column;gap:12px;align-items:center;">
+            <button class="mock-button" style="width:48px;height:48px;">Back</button>
+            <button class="mock-button" style="width:48px;height:48px;">Skip</button>
+          </div>
+          <div style="border:1px solid #d9dee8;border-radius:14px;padding:18px;min-height:220px;background:white;">
+            <div class="label">owner/repo</div>
+            <h3 style="margin-top:8px;">tiny-search-engine</h3>
+            <p>Fast local search experiments in Rust.</p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:18px;">
+              <span class="placeholder" style="padding:6px 10px;">Rust</span>
+              <span class="placeholder" style="padding:6px 10px;">128 stars</span>
+              <span class="placeholder" style="padding:6px 10px;">updated recently</span>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:12px;align-items:center;">
+            <button class="mock-button" style="width:48px;height:48px;">Save</button>
+            <button class="mock-button" style="width:48px;height:48px;">Next</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Center Reel</h3>
+      <p>One repo dominates the screen. Actions sit around it like a swipe app. Strongest short-form feeling.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">B: Feed + Shelf</div>
+        <div class="mockup-body" style="min-height:280px;display:grid;grid-template-columns:minmax(240px,1fr) 160px;gap:16px;">
+          <div style="border:1px solid #d9dee8;border-radius:14px;padding:18px;background:white;">
+            <div class="label">current repo</div>
+            <h3>notebook-to-app</h3>
+            <p>Turn notebook prototypes into small web apps.</p>
+            <div class="placeholder" style="height:96px;margin-top:16px;">README preview</div>
+            <div style="display:flex;gap:8px;margin-top:14px;">
+              <button class="mock-button">Skip</button>
+              <button class="mock-button">Save</button>
+              <button class="mock-button">Next</button>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:10px;">
+            <div class="label">saved</div>
+            <div class="placeholder" style="height:48px;">repo</div>
+            <div class="placeholder" style="height:48px;">repo</div>
+            <div class="label" style="margin-top:8px;">history</div>
+            <div class="placeholder" style="height:48px;">repo</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Feed + Shelf</h3>
+      <p>Current repo plus saved/history shelf. Practical, but starts feeling more like a dashboard.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">C: Reel + Detail Drawer</div>
+        <div class="mockup-body" style="min-height:280px;display:grid;grid-template-columns:minmax(230px,1fr) 210px;gap:16px;">
+          <div style="border:1px solid #d9dee8;border-radius:14px;padding:18px;background:white;">
+            <div class="label">reel card</div>
+            <h3>cli-animation-lab</h3>
+            <p>Experiments for polished terminal motion.</p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:18px;">
+              <span class="placeholder" style="padding:6px 10px;">TypeScript</span>
+              <span class="placeholder" style="padding:6px 10px;">42 stars</span>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:22px;">
+              <button class="mock-button">Back</button>
+              <button class="mock-button">Skip</button>
+              <button class="mock-button">Save</button>
+              <button class="mock-button">Next</button>
+            </div>
+          </div>
+          <div style="border:1px solid #d9dee8;border-radius:12px;padding:14px;background:#fbfcff;">
+            <div class="label">detail drawer</div>
+            <div class="placeholder" style="height:64px;margin-top:10px;">README</div>
+            <input class="mock-input" placeholder="tags">
+            <input class="mock-input" placeholder="memo">
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Reel + Detail Drawer</h3>
+      <p>Fast default card with an attached place for README, tags, and notes. Good balance for MVP.</p>
+    </div>
+  </div>
+</div>

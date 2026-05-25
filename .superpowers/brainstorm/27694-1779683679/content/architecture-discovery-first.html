@@ -1,0 +1,41 @@
+<h2>Discovery-first MVP architecture</h2>
+<p class="subtitle">Local-first web app now, with boundaries that keep a future Tauri version realistic.</p>
+
+<div class="mockup">
+  <div class="mockup-header">System shape</div>
+  <div class="mockup-body" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;align-items:stretch;">
+    <div style="border:1px solid #d9dee8;border-radius:12px;padding:16px;background:white;">
+      <div class="label">React/Vite frontend</div>
+      <h3>Reel UI</h3>
+      <p>Card, detail drawer, keyboard actions, Saved, History, Settings.</p>
+      <div class="placeholder" style="height:48px;margin-top:12px;">HTTP client</div>
+    </div>
+
+    <div style="display:flex;align-items:center;justify-content:center;font-size:28px;color:#69758a;">→</div>
+
+    <div style="border:1px solid #d9dee8;border-radius:12px;padding:16px;background:white;">
+      <div class="label">Rust local API</div>
+      <h3>App core</h3>
+      <p>OAuth callback, GitHub API client, discovery queue, repository actions.</p>
+      <div class="placeholder" style="height:48px;margin-top:12px;">REST endpoints</div>
+    </div>
+  </div>
+
+  <div class="mockup-body" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-top:16px;">
+    <div style="border:1px solid #d9dee8;border-radius:12px;padding:16px;background:#fbfcff;">
+      <div class="label">External</div>
+      <h3>GitHub</h3>
+      <p>OAuth, Search API, GraphQL details. No Star/write actions in MVP.</p>
+    </div>
+    <div style="border:1px solid #d9dee8;border-radius:12px;padding:16px;background:#fbfcff;">
+      <div class="label">Local data</div>
+      <h3>SQLite</h3>
+      <p>Repos, viewed history, saved items, skips, tags, notes, discovery batches.</p>
+    </div>
+    <div style="border:1px solid #d9dee8;border-radius:12px;padding:16px;background:#fbfcff;">
+      <div class="label">Future path</div>
+      <h3>Tauri</h3>
+      <p>Keep UI and core API boundaries clean so the local API can move into app shell later.</p>
+    </div>
+  </div>
+</div>
