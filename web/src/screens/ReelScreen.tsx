@@ -27,10 +27,8 @@ export function ReelScreen({ auth, onAuthChange }: ReelScreenProps) {
   };
 
   const loadCurrent = useCallback(async () => {
-    // 接続直後は最初の候補を viewed として扱いたいので、接続済みなら next を使う。
-    const payload = auth.connected ? await api.next() : await api.current();
-    applyReel(payload);
-  }, [auth.connected]);
+    applyReel(await api.current());
+  }, []);
 
   useEffect(() => {
     void loadCurrent();
@@ -38,6 +36,7 @@ export function ReelScreen({ auth, onAuthChange }: ReelScreenProps) {
 
   const connect = async () => {
     const nextAuth = await api.devConnect();
+    applyReel(await api.next());
     onAuthChange(nextAuth);
   };
 
