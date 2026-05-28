@@ -1,9 +1,13 @@
-use crate::{error::ApiError, models::NewRepository, repositories::RepositoryStore};
-use std::collections::HashSet;
+use crate::{
+    error::ApiError, github::GitHubDiscoveryClient, models::NewRepository,
+    repositories::RepositoryStore,
+};
+use std::{collections::HashSet, sync::Arc};
 
 #[derive(Clone)]
 pub struct DiscoveryService {
     store: RepositoryStore,
+    github_client: Option<Arc<dyn GitHubDiscoveryClient>>,
 }
 
 #[derive(Clone)]
@@ -19,7 +23,18 @@ impl DiscoveryCandidate {
 
 impl DiscoveryService {
     pub fn new(store: RepositoryStore) -> Self {
-        Self { store }
+        Self {
+            store,
+            github_client: None,
+        }
+    }
+
+    pub fn with_github_client(
+        mut self,
+        github_client: Option<Arc<dyn GitHubDiscoveryClient>>,
+    ) -> Self {
+        self.github_client = github_client;
+        self
     }
 
     pub async fn enqueue_candidates(
@@ -63,11 +78,43 @@ impl DiscoveryService {
         Ok(accepted_ids.len())
     }
 
-    pub async fn seed_if_empty(&self) -> Result<(), ApiError> {
-        // MVP では GitHub API 未接続でも体験確認できるよう、空のときだけ固定候補を補充する。
+    pub async fn ensure_candidates(&self) -> Result<(), ApiError> {
         if self.store.next_queued_repository().await?.is_some() {
             return Ok(());
         }
+
+        if let Some(github_client) = self.github_client.as_ref() {
+            match github_client.search_recently_updated_repositories().await {
+                Ok((query, repositories)) => {
+                    let candidates = repositories
+                        .into_iter()
+                        .map(DiscoveryCandidate::from_new_repository)
+                        .collect();
+                    let accepted = self
+                        .enqueue_candidates("recently_updated_live_search", &query, candidates)
+                        .await?;
+                    if accepted > 0 {
+                        return Ok(());
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        ?error,
+                        "github discovery failed; falling back to seed repositories"
+                    );
+                }
+            }
+        }
+
+        self.enqueue_seed_candidates().await?;
+        Ok(())
+    }
+
+    pub async fn seed_if_empty(&self) -> Result<(), ApiError> {
+        self.ensure_candidates().await
+    }
+
+    async fn enqueue_seed_candidates(&self) -> Result<usize, ApiError> {
         self.enqueue_candidates(
             "seed",
             "local fixture seed",
@@ -77,8 +124,7 @@ impl DiscoveryService {
                 seed_repo("sqlite/sqlite", 3, "C", 7000),
             ],
         )
-        .await?;
-        Ok(())
+        .await
     }
 }
 
