@@ -6,10 +6,12 @@ use git_reel_server::{
     config::Config,
     db::connect,
     discovery::{DiscoveryCandidate, DiscoveryService},
+    github::{GitHubDiscoveryClient, GitHubError},
     models::{NewRepository, RepoEventKind},
     repositories::RepositoryStore,
 };
 use serde_json::Value;
+use std::sync::Arc;
 use tower::ServiceExt;
 
 fn sample_repo(full_name: &str, github_id: i64) -> NewRepository {
@@ -28,6 +30,22 @@ fn sample_repo(full_name: &str, github_id: i64) -> NewRepository {
         topics: vec!["cli".to_string(), "sqlite".to_string()],
         html_url: format!("https://github.com/{full_name}"),
         readme_preview: Some("README preview".to_string()),
+    }
+}
+
+struct FakeGitHubClient {
+    result: Result<(String, Vec<NewRepository>), GitHubError>,
+}
+
+#[async_trait::async_trait]
+impl GitHubDiscoveryClient for FakeGitHubClient {
+    async fn search_recently_updated_repositories(
+        &self,
+    ) -> Result<(String, Vec<NewRepository>), GitHubError> {
+        match &self.result {
+            Ok((query, repositories)) => Ok((query.clone(), repositories.clone())),
+            Err(_) => Err(GitHubError::HttpStatus(StatusCode::FORBIDDEN)),
+        }
     }
 }
 
@@ -160,6 +178,71 @@ async fn discovery_queue_deduplicates_candidates_in_one_batch() {
     assert_eq!(first.full_name, "acme/duplicate");
     assert_eq!(second.full_name, "acme/fresh");
     assert!(empty.is_none());
+}
+
+#[tokio::test]
+async fn discovery_uses_github_candidates_when_queue_is_empty() {
+    let pool = connect(&Config::test()).await.unwrap();
+    let store = RepositoryStore::new(pool);
+    let service =
+        DiscoveryService::new(store.clone()).with_github_client(Some(Arc::new(FakeGitHubClient {
+            result: Ok((
+                "stars:10..5000 fork:false archived:false pushed:>2026-02-27 sort:updated-desc"
+                    .to_string(),
+                vec![sample_repo("acme/live", 401)],
+            )),
+        })));
+
+    service.ensure_candidates().await.unwrap();
+
+    let next = store.next_queued_repository().await.unwrap().unwrap();
+    assert_eq!(next.full_name, "acme/live");
+}
+
+#[tokio::test]
+async fn discovery_falls_back_to_seed_without_github_client() {
+    let pool = connect(&Config::test()).await.unwrap();
+    let store = RepositoryStore::new(pool);
+    let service = DiscoveryService::new(store.clone());
+
+    service.ensure_candidates().await.unwrap();
+
+    let next = store.next_queued_repository().await.unwrap().unwrap();
+    assert_eq!(next.full_name, "rust-lang/rust");
+}
+
+#[tokio::test]
+async fn discovery_falls_back_to_seed_when_github_fails() {
+    let pool = connect(&Config::test()).await.unwrap();
+    let store = RepositoryStore::new(pool);
+    let service =
+        DiscoveryService::new(store.clone()).with_github_client(Some(Arc::new(FakeGitHubClient {
+            result: Err(GitHubError::HttpStatus(StatusCode::FORBIDDEN)),
+        })));
+
+    service.ensure_candidates().await.unwrap();
+
+    let next = store.next_queued_repository().await.unwrap().unwrap();
+    assert_eq!(next.full_name, "rust-lang/rust");
+}
+
+#[tokio::test]
+async fn discovery_falls_back_to_seed_when_github_returns_no_accepted_candidates() {
+    let pool = connect(&Config::test()).await.unwrap();
+    let store = RepositoryStore::new(pool.clone());
+    let service =
+        DiscoveryService::new(store.clone()).with_github_client(Some(Arc::new(FakeGitHubClient {
+            result: Ok((
+                "stars:10..5000 fork:false archived:false pushed:>2026-02-27 sort:updated-desc"
+                    .to_string(),
+                Vec::new(),
+            )),
+        })));
+
+    service.ensure_candidates().await.unwrap();
+
+    let next = store.next_queued_repository().await.unwrap().unwrap();
+    assert_eq!(next.full_name, "rust-lang/rust");
 }
 
 #[tokio::test]

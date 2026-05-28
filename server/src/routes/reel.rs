@@ -30,7 +30,8 @@ async fn current(State(state): State<AppState>) -> Result<Json<ReelResponse>, Ap
         }));
     }
     DiscoveryService::new(state.repositories.clone())
-        .seed_if_empty()
+        .with_github_client(state.github_client.clone())
+        .ensure_candidates()
         .await?;
     let repository = state.repositories.next_queued_repository().await?;
     let empty_reason = if repository.is_none() {
@@ -53,7 +54,8 @@ async fn next(State(state): State<AppState>) -> Result<Json<ReelResponse>, ApiEr
         }));
     }
     DiscoveryService::new(state.repositories.clone())
-        .seed_if_empty()
+        .with_github_client(state.github_client.clone())
+        .ensure_candidates()
         .await?;
     let repository = state.repositories.claim_next_queued_repository().await?;
     let empty_reason = if repository.is_none() {
