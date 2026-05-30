@@ -175,11 +175,12 @@ async fn dev_connect(
 ) -> Result<Json<AuthStateResponse>, ApiError> {
     sqlx::query(
         r#"
-        INSERT INTO auth_state (id, connected, username)
-        VALUES (1, 1, ?)
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 1, ?, NULL)
         ON CONFLICT(id) DO UPDATE SET
           connected = 1,
           username = excluded.username,
+          access_token = excluded.access_token,
           updated_at = CURRENT_TIMESTAMP
         "#,
     )
@@ -218,5 +219,42 @@ mod tests {
             response.headers().get(LOCATION).unwrap(),
             "https://github.com/login/oauth/authorize?client_id=test-client&redirect_uri=http%3A%2F%2F127.0.0.1%3A4317%2Fapi%2Fauth%2Fgithub%2Fcallback&scope=read%3Auser"
         );
+    }
+
+    #[tokio::test]
+    async fn dev_connect_clears_existing_access_token() {
+        let config = Config::test();
+        let pool = connect(&config).await.unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO auth_state (id, connected, username, access_token)
+            VALUES (1, 1, 'github-user', 'github-token')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let state = AppState {
+            repositories: RepositoryStore::new(pool.clone()),
+            pool: pool.clone(),
+            config,
+        };
+
+        let _ = dev_connect(
+            State(state),
+            Json(DevConnectRequest {
+                username: "local-dev".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let token: Option<String> =
+            sqlx::query_scalar("SELECT access_token FROM auth_state WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        assert!(token.is_none());
     }
 }
