@@ -1,6 +1,7 @@
+use chrono::NaiveDate;
 use git_reel_server::github::{
-    parse_graphql_readme_preview, parse_oauth_token_response, parse_search_response,
-    parse_user_response,
+    build_recently_updated_search_query, parse_graphql_readme_preview, parse_oauth_token_response,
+    parse_search_response, parse_user_response,
 };
 
 #[test]
@@ -46,4 +47,21 @@ fn extracts_oauth_access_token() {
 fn extracts_github_user_login() {
     let login = parse_user_response(r#"{"login":"okw0204","id":12345}"#).unwrap();
     assert_eq!(login, "okw0204");
+}
+
+#[test]
+fn builds_recently_updated_live_search_query() {
+    let query = build_recently_updated_search_query(NaiveDate::from_ymd_opt(2026, 5, 28).unwrap());
+
+    assert_eq!(
+        query,
+        "stars:10..5000 fork:false archived:false pushed:>2026-02-27 sort:updated-desc"
+    );
+}
+
+#[test]
+fn creates_github_client_from_token() {
+    let client = git_reel_server::github::GitHubClient::new("secret-token".to_string());
+
+    assert_eq!(client.token(), "secret-token");
 }

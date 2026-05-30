@@ -211,6 +211,7 @@ mod tests {
             repositories: RepositoryStore::new(pool.clone()),
             pool,
             config,
+            github_client: None,
         };
 
         let response = github_start(State(state)).await.unwrap().into_response();
@@ -238,6 +239,7 @@ mod tests {
             repositories: RepositoryStore::new(pool.clone()),
             pool: pool.clone(),
             config,
+            github_client: None,
         };
 
         let _ = dev_connect(
