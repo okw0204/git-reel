@@ -14,8 +14,8 @@ impl Config {
             database_url: std::env::var("GIT_REEL_DATABASE_URL")
                 .unwrap_or_else(|_| "sqlite:git-reel.db".to_string()),
             github_token: std::env::var("GITHUB_TOKEN").ok(),
-            github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
-            github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
+            github_client_id: optional_env("GITHUB_CLIENT_ID"),
+            github_client_secret: optional_env("GITHUB_CLIENT_SECRET"),
             public_base_url: std::env::var("GIT_REEL_PUBLIC_BASE_URL")
                 .unwrap_or_else(|_| "http://127.0.0.1:4317".to_string()),
             public_app_url: std::env::var("GIT_REEL_PUBLIC_APP_URL")
@@ -33,4 +33,8 @@ impl Config {
             public_app_url: "http://127.0.0.1:5173".to_string(),
         }
     }
+}
+
+fn optional_env(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|value| !value.is_empty())
 }
