@@ -8,6 +8,7 @@
 /.env
 /playwright-report/
 /test-results/
+/.worktrees/
 /.superpowers/
 .superpowers/**/state/
 /web/tsconfig.tsbuildinfo
