@@ -34,10 +34,8 @@ export function ReelScreen({ auth, onAuthChange }: ReelScreenProps) {
     void loadCurrent();
   }, [loadCurrent]);
 
-  const connect = async () => {
-    const nextAuth = await api.devConnect();
-    applyReel(await api.next());
-    onAuthChange(nextAuth);
+  const connect = () => {
+    window.location.href = "/api/auth/github/start";
   };
 
   const next = useCallback(async () => {
@@ -105,10 +103,10 @@ export function ReelScreen({ auth, onAuthChange }: ReelScreenProps) {
       <section className="center-panel">
         <p className="eyebrow">Local-first discovery</p>
         <h1>GitHubに接続するとリールを開始できます</h1>
-        <p>開発用接続ではローカルのシード候補だけを使います。</p>
+        <p>GitHub OAuth で接続後も、リポジトリ候補はローカルのシード候補を使います。</p>
         <button className="primary-button" onClick={connect} type="button">
           <UserCheck aria-hidden="true" size={18} />
-          開発用に接続
+          GitHubに接続
         </button>
       </section>
     );

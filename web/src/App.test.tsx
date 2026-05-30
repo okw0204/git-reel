@@ -38,13 +38,16 @@ describe("App", () => {
     vi.unstubAllGlobals();
   });
 
-  test("開発用接続からリールを表示できる", async () => {
+  test("未接続時に GitHub OAuth 接続へ遷移できる", async () => {
+    const location = { href: "http://127.0.0.1:5173/" };
+    vi.stubGlobal("location", location);
+
     render(<App />);
 
     await screen.findByText("GitHubに接続するとリールを開始できます");
-    await userEvent.click(screen.getByRole("button", { name: "開発用に接続" }));
+    await userEvent.click(screen.getByRole("button", { name: "GitHubに接続" }));
 
-    expect(await screen.findByRole("heading", { name: "okw0204/git-reel" })).toBeInTheDocument();
+    expect(window.location.href).toBe("/api/auth/github/start");
   });
 
   test("履歴画面を表示できる", async () => {
