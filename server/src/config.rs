@@ -5,6 +5,7 @@ pub struct Config {
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
     pub public_base_url: String,
+    pub public_app_url: String,
 }
 
 impl Config {
@@ -17,6 +18,8 @@ impl Config {
             github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
             public_base_url: std::env::var("GIT_REEL_PUBLIC_BASE_URL")
                 .unwrap_or_else(|_| "http://127.0.0.1:4317".to_string()),
+            public_app_url: std::env::var("GIT_REEL_PUBLIC_APP_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:5173".to_string()),
         }
     }
 
@@ -27,6 +30,7 @@ impl Config {
             github_client_id: None,
             github_client_secret: None,
             public_base_url: "http://127.0.0.1:4317".to_string(),
+            public_app_url: "http://127.0.0.1:5173".to_string(),
         }
     }
 }

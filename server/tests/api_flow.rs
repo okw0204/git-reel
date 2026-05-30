@@ -150,7 +150,10 @@ async fn github_oauth_callback_error_redirects_without_connecting() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    assert_eq!(response.headers().get("location").unwrap(), "/");
+    assert_eq!(
+        response.headers().get("location").unwrap(),
+        "http://127.0.0.1:5173"
+    );
 
     let response = app
         .oneshot(Request::get("/api/auth/state").body(Body::empty()).unwrap())

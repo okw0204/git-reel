@@ -71,7 +71,7 @@ async fn github_callback(
     Query(query): Query<GitHubCallbackQuery>,
 ) -> Result<Redirect, ApiError> {
     if query.error.is_some() {
-        return Ok(Redirect::to("/"));
+        return Ok(Redirect::to(&state.config.public_app_url));
     }
 
     let code = query
@@ -97,7 +97,7 @@ async fn github_callback(
     .execute(&state.pool)
     .await?;
 
-    Ok(Redirect::to("/"))
+    Ok(Redirect::to(&state.config.public_app_url))
 }
 
 async fn exchange_github_code(
