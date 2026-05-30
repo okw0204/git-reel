@@ -2,6 +2,9 @@
 pub struct Config {
     pub database_url: String,
     pub github_token: Option<String>,
+    pub github_client_id: Option<String>,
+    pub github_client_secret: Option<String>,
+    pub public_base_url: String,
 }
 
 impl Config {
@@ -10,6 +13,10 @@ impl Config {
             database_url: std::env::var("GIT_REEL_DATABASE_URL")
                 .unwrap_or_else(|_| "sqlite:git-reel.db".to_string()),
             github_token: std::env::var("GITHUB_TOKEN").ok(),
+            github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
+            github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
+            public_base_url: std::env::var("GIT_REEL_PUBLIC_BASE_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:4317".to_string()),
         }
     }
 
@@ -17,6 +24,9 @@ impl Config {
         Self {
             database_url: "sqlite::memory:".to_string(),
             github_token: None,
+            github_client_id: None,
+            github_client_secret: None,
+            public_base_url: "http://127.0.0.1:4317".to_string(),
         }
     }
 }

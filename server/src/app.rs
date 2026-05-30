@@ -7,6 +7,7 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 pub struct AppState {
     pub pool: SqlitePool,
     pub repositories: RepositoryStore,
+    pub config: Config,
 }
 
 pub async fn build_app() -> anyhow::Result<Router> {
@@ -23,6 +24,7 @@ async fn build_app_with_config(config: Config) -> anyhow::Result<Router> {
     let state = AppState {
         repositories: RepositoryStore::new(pool.clone()),
         pool,
+        config,
     };
 
     // フロントエンドからは /api/* だけを見ればよいように、機能単位でルートを分ける。

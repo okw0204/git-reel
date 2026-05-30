@@ -102,6 +102,22 @@ async fn auth_state_starts_disconnected_and_dev_connect_sets_user() {
 }
 
 #[tokio::test]
+async fn github_oauth_start_requires_oauth_config() {
+    let app = git_reel_server::build_test_app().await.unwrap();
+
+    let response = app
+        .oneshot(
+            Request::get("/api/auth/github/start")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
 async fn discovery_queue_excludes_viewed_and_skipped_repositories() {
     let pool = connect(&Config::test()).await.unwrap();
     let store = RepositoryStore::new(pool.clone());

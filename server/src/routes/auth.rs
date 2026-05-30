@@ -1,6 +1,7 @@
 use crate::{app::AppState, error::ApiError};
 use axum::{
     extract::State,
+    response::Redirect,
     routing::{get, post},
     Json, Router,
 };
@@ -10,6 +11,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/state", get(auth_state))
         .route("/dev-connect", post(dev_connect))
+        .route("/github/start", get(github_start))
 }
 
 #[derive(Serialize)]
@@ -21,6 +23,29 @@ struct AuthStateResponse {
 #[derive(Deserialize)]
 struct DevConnectRequest {
     username: String,
+}
+
+fn github_oauth_config(state: &AppState) -> Result<(&str, &str), ApiError> {
+    let client_id = state
+        .config
+        .github_client_id
+        .as_deref()
+        .ok_or_else(|| ApiError::OAuth("GITHUB_CLIENT_ID is not configured".to_string()))?;
+    let client_secret = state
+        .config
+        .github_client_secret
+        .as_deref()
+        .ok_or_else(|| ApiError::OAuth("GITHUB_CLIENT_SECRET is not configured".to_string()))?;
+    Ok((client_id, client_secret))
+}
+
+async fn github_start(State(state): State<AppState>) -> Result<Redirect, ApiError> {
+    let (client_id, _) = github_oauth_config(&state)?;
+    let redirect_uri = format!("{}/api/auth/github/callback", state.config.public_base_url);
+    let location = format!(
+        "https://github.com/login/oauth/authorize?client_id={client_id}&redirect_uri={redirect_uri}&scope=read:user"
+    );
+    Ok(Redirect::temporary(&location))
 }
 
 async fn auth_state(State(state): State<AppState>) -> Result<Json<AuthStateResponse>, ApiError> {
