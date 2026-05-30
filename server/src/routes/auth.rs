@@ -5,6 +5,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
 pub fn router() -> Router<AppState> {
@@ -42,10 +43,16 @@ fn github_oauth_config(state: &AppState) -> Result<(&str, &str), ApiError> {
 async fn github_start(State(state): State<AppState>) -> Result<Redirect, ApiError> {
     let (client_id, _) = github_oauth_config(&state)?;
     let redirect_uri = format!("{}/api/auth/github/callback", state.config.public_base_url);
-    let location = format!(
-        "https://github.com/login/oauth/authorize?client_id={client_id}&redirect_uri={redirect_uri}&scope=read:user"
-    );
-    Ok(Redirect::temporary(&location))
+    let location = Url::parse_with_params(
+        "https://github.com/login/oauth/authorize",
+        &[
+            ("client_id", client_id),
+            ("redirect_uri", redirect_uri.as_str()),
+            ("scope", "read:user"),
+        ],
+    )
+    .map_err(|error| ApiError::OAuth(error.to_string()))?;
+    Ok(Redirect::temporary(location.as_str()))
 }
 
 async fn auth_state(State(state): State<AppState>) -> Result<Json<AuthStateResponse>, ApiError> {
@@ -82,4 +89,32 @@ async fn dev_connect(
         connected: true,
         username: Some(payload.username),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{config::Config, db::connect, repositories::RepositoryStore};
+    use axum::{http::header::LOCATION, response::IntoResponse};
+
+    #[tokio::test]
+    async fn github_start_encodes_redirect_uri() {
+        let mut config = Config::test();
+        config.github_client_id = Some("test-client".to_string());
+        config.github_client_secret = Some("test-secret".to_string());
+        config.public_base_url = "http://127.0.0.1:4317".to_string();
+        let pool = connect(&config).await.unwrap();
+        let state = AppState {
+            repositories: RepositoryStore::new(pool.clone()),
+            pool,
+            config,
+        };
+
+        let response = github_start(State(state)).await.unwrap().into_response();
+
+        assert_eq!(
+            response.headers().get(LOCATION).unwrap(),
+            "https://github.com/login/oauth/authorize?client_id=test-client&redirect_uri=http%3A%2F%2F127.0.0.1%3A4317%2Fapi%2Fauth%2Fgithub%2Fcallback&scope=read%3Auser"
+        );
+    }
 }
