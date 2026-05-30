@@ -1,4 +1,7 @@
-use git_reel_server::github::{parse_graphql_readme_preview, parse_search_response};
+use git_reel_server::github::{
+    parse_graphql_readme_preview, parse_oauth_token_response, parse_search_response,
+    parse_user_response,
+};
 
 #[test]
 fn converts_search_response_to_new_repository() {
@@ -28,4 +31,19 @@ fn returns_none_for_nullable_graphql_repository() {
     let fixture = r#"{"data":{"repository":null}}"#;
     let preview = parse_graphql_readme_preview(fixture).unwrap();
     assert_eq!(preview, None);
+}
+
+#[test]
+fn extracts_oauth_access_token() {
+    let token = parse_oauth_token_response(
+        r#"{"access_token":"gho_example","token_type":"bearer","scope":"read:user"}"#,
+    )
+    .unwrap();
+    assert_eq!(token, "gho_example");
+}
+
+#[test]
+fn extracts_github_user_login() {
+    let login = parse_user_response(r#"{"login":"okw0204","id":12345}"#).unwrap();
+    assert_eq!(login, "okw0204");
 }

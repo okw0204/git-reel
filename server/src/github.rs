@@ -8,6 +8,16 @@ pub enum GitHubError {
 }
 
 #[derive(Deserialize)]
+struct OAuthTokenResponse {
+    access_token: String,
+}
+
+#[derive(Deserialize)]
+struct UserResponse {
+    login: String,
+}
+
+#[derive(Deserialize)]
 struct SearchResponse {
     items: Vec<SearchRepository>,
 }
@@ -90,4 +100,14 @@ pub fn parse_graphql_readme_preview(body: &str) -> Result<Option<String>, GitHub
         .repository
         .and_then(|repository| repository.object)
         .map(|object| object.text))
+}
+
+pub fn parse_oauth_token_response(body: &str) -> Result<String, GitHubError> {
+    let response: OAuthTokenResponse = serde_json::from_str(body)?;
+    Ok(response.access_token)
+}
+
+pub fn parse_user_response(body: &str) -> Result<String, GitHubError> {
+    let response: UserResponse = serde_json::from_str(body)?;
+    Ok(response.login)
 }
