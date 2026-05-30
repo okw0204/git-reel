@@ -118,6 +118,36 @@ async fn github_oauth_start_requires_oauth_config() {
 }
 
 #[tokio::test]
+async fn github_oauth_callback_error_redirects_without_connecting() {
+    let app = git_reel_server::build_test_app().await.unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::get("/api/auth/github/callback?error=access_denied")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(response.headers().get("location").unwrap(), "/");
+
+    let response = app
+        .oneshot(Request::get("/api/auth/state").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let state: Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(state["connected"], false);
+    assert!(state["username"].is_null());
+}
+
+#[tokio::test]
 async fn discovery_queue_excludes_viewed_and_skipped_repositories() {
     let pool = connect(&Config::test()).await.unwrap();
     let store = RepositoryStore::new(pool.clone());

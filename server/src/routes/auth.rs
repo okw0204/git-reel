@@ -1,6 +1,10 @@
-use crate::{app::AppState, error::ApiError};
+use crate::{
+    app::AppState,
+    error::ApiError,
+    github::{parse_oauth_token_response, parse_user_response},
+};
 use axum::{
-    extract::State,
+    extract::{Query, State},
     response::Redirect,
     routing::{get, post},
     Json, Router,
@@ -13,6 +17,7 @@ pub fn router() -> Router<AppState> {
         .route("/state", get(auth_state))
         .route("/dev-connect", post(dev_connect))
         .route("/github/start", get(github_start))
+        .route("/github/callback", get(github_callback))
 }
 
 #[derive(Serialize)]
@@ -24,6 +29,12 @@ struct AuthStateResponse {
 #[derive(Deserialize)]
 struct DevConnectRequest {
     username: String,
+}
+
+#[derive(Deserialize)]
+struct GitHubCallbackQuery {
+    code: Option<String>,
+    error: Option<String>,
 }
 
 fn github_oauth_config(state: &AppState) -> Result<(&str, &str), ApiError> {
@@ -53,6 +64,97 @@ async fn github_start(State(state): State<AppState>) -> Result<Redirect, ApiErro
     )
     .map_err(|error| ApiError::OAuth(error.to_string()))?;
     Ok(Redirect::temporary(location.as_str()))
+}
+
+async fn github_callback(
+    State(state): State<AppState>,
+    Query(query): Query<GitHubCallbackQuery>,
+) -> Result<Redirect, ApiError> {
+    if query.error.is_some() {
+        return Ok(Redirect::to("/"));
+    }
+
+    let code = query
+        .code
+        .ok_or_else(|| ApiError::OAuth("GitHub OAuth callback did not include code".to_string()))?;
+    let (client_id, client_secret) = github_oauth_config(&state)?;
+    let access_token = exchange_github_code(client_id, client_secret, &code).await?;
+    let username = fetch_github_username(&access_token).await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          connected = 1,
+          username = excluded.username,
+          access_token = excluded.access_token,
+          updated_at = CURRENT_TIMESTAMP
+        "#,
+    )
+    .bind(&username)
+    .bind(&access_token)
+    .execute(&state.pool)
+    .await?;
+
+    Ok(Redirect::to("/"))
+}
+
+async fn exchange_github_code(
+    client_id: &str,
+    client_secret: &str,
+    code: &str,
+) -> Result<String, ApiError> {
+    let client = reqwest::Client::new();
+    let response = client
+        .post("https://github.com/login/oauth/access_token")
+        .header("accept", "application/json")
+        .form(&[
+            ("client_id", client_id),
+            ("client_secret", client_secret),
+            ("code", code),
+        ])
+        .send()
+        .await
+        .map_err(|error| ApiError::OAuth(error.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(ApiError::OAuth(format!(
+            "GitHub token endpoint returned {}",
+            response.status()
+        )));
+    }
+
+    let body = response
+        .text()
+        .await
+        .map_err(|error| ApiError::OAuth(error.to_string()))?;
+    parse_oauth_token_response(&body).map_err(|error| ApiError::OAuth(error.to_string()))
+}
+
+async fn fetch_github_username(access_token: &str) -> Result<String, ApiError> {
+    let client = reqwest::Client::new();
+    let response = client
+        .get("https://api.github.com/user")
+        .bearer_auth(access_token)
+        .header("accept", "application/vnd.github+json")
+        .header("user-agent", "git-reel")
+        .send()
+        .await
+        .map_err(|error| ApiError::OAuth(error.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(ApiError::OAuth(format!(
+            "GitHub user endpoint returned {}",
+            response.status()
+        )));
+    }
+
+    let body = response
+        .text()
+        .await
+        .map_err(|error| ApiError::OAuth(error.to_string()))?;
+    parse_user_response(&body).map_err(|error| ApiError::OAuth(error.to_string()))
 }
 
 async fn auth_state(State(state): State<AppState>) -> Result<Json<AuthStateResponse>, ApiError> {
