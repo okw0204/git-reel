@@ -64,11 +64,8 @@ async fn github_start(State(state): State<AppState>) -> Result<Redirect, ApiErro
     let oauth_state = Uuid::new_v4().to_string();
     sqlx::query(
         r#"
-        INSERT INTO auth_state (id, connected, oauth_state)
-        VALUES (1, 0, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          oauth_state = excluded.oauth_state,
-          updated_at = CURRENT_TIMESTAMP
+        INSERT INTO oauth_states (state)
+        VALUES (?)
         "#,
     )
     .bind(&oauth_state)
@@ -100,12 +97,12 @@ async fn github_callback(
     let returned_state = query.state.ok_or_else(|| {
         ApiError::OAuth("GitHub OAuth callback did not include state".to_string())
     })?;
-    let stored_state: Option<String> =
-        sqlx::query_scalar("SELECT oauth_state FROM auth_state WHERE id = 1")
-            .fetch_optional(&state.pool)
-            .await?
-            .flatten();
-    if stored_state.as_deref() != Some(returned_state.as_str()) {
+    let deleted_rows = sqlx::query("DELETE FROM oauth_states WHERE state = ?")
+        .bind(&returned_state)
+        .execute(&state.pool)
+        .await?
+        .rows_affected();
+    if deleted_rows == 0 {
         return Err(ApiError::OAuth(
             "GitHub OAuth callback state did not match".to_string(),
         ));
@@ -127,7 +124,6 @@ async fn github_callback(
           connected = 1,
           username = excluded.username,
           access_token = excluded.access_token,
-          oauth_state = NULL,
           updated_at = CURRENT_TIMESTAMP
         "#,
     )
@@ -316,12 +312,58 @@ mod tests {
         let location = response.headers().get(LOCATION).unwrap().to_str().unwrap();
         assert!(location.contains("state="));
 
-        let oauth_state: Option<String> =
-            sqlx::query_scalar("SELECT oauth_state FROM auth_state WHERE id = 1")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert!(oauth_state.is_some_and(|state| location.contains(&state)));
+        let oauth_state: String = sqlx::query_scalar("SELECT state FROM oauth_states")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(location.contains(&oauth_state));
+    }
+
+    #[tokio::test]
+    async fn github_start_keeps_multiple_pending_oauth_states() {
+        let mut config = Config::test();
+        config.github_client_id = Some("test-client".to_string());
+        config.github_client_secret = Some("test-secret".to_string());
+        let pool = connect(&config).await.unwrap();
+        let state = AppState {
+            repositories: RepositoryStore::new(pool.clone()),
+            pool: pool.clone(),
+            config,
+            github_client: None,
+        };
+
+        let first_response = github_start(State(state.clone()))
+            .await
+            .unwrap()
+            .into_response();
+        let first_location = first_response
+            .headers()
+            .get(LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let second_response = github_start(State(state)).await.unwrap().into_response();
+        let second_location = second_response
+            .headers()
+            .get(LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let oauth_states: Vec<String> = sqlx::query_scalar("SELECT state FROM oauth_states")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(oauth_states.len(), 2);
+        assert!(oauth_states
+            .iter()
+            .any(|state| first_location.contains(state)));
+        assert!(oauth_states
+            .iter()
+            .any(|state| second_location.contains(state)));
     }
 
     #[tokio::test]
