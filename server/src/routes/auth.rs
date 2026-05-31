@@ -195,7 +195,10 @@ async fn fetch_github_username(access_token: &str) -> Result<String, ApiError> {
 }
 
 fn github_callback_url(state: &AppState) -> String {
-    format!("{}/api/auth/github/callback", state.config.public_base_url)
+    format!(
+        "{}/api/auth/github/callback",
+        state.config.public_base_url.trim_end_matches('/')
+    )
 }
 
 fn github_token_exchange_form<'a>(
@@ -240,6 +243,12 @@ async fn dev_connect(
     State(state): State<AppState>,
     Json(payload): Json<DevConnectRequest>,
 ) -> Result<Json<AuthStateResponse>, ApiError> {
+    if github_oauth_configured(&state) {
+        return Err(ApiError::OAuth(
+            "dev-connect is disabled when GitHub OAuth is configured".to_string(),
+        ));
+    }
+
     sqlx::query(
         r#"
         INSERT INTO auth_state (id, connected, username, access_token, oauth_state)
@@ -293,6 +302,28 @@ mod tests {
         ));
         assert!(location.contains("scope=read%3Auser"));
         assert!(location.contains("state="));
+    }
+
+    #[tokio::test]
+    async fn github_start_normalizes_trailing_slash_in_public_base_url() {
+        let mut config = Config::test();
+        config.github_client_id = Some("test-client".to_string());
+        config.github_client_secret = Some("test-secret".to_string());
+        config.public_base_url = "https://example.com/".to_string();
+        let pool = connect(&config).await.unwrap();
+        let state = AppState {
+            repositories: RepositoryStore::new(pool.clone()),
+            pool,
+            config,
+            github_client: None,
+        };
+
+        let response = github_start(State(state)).await.unwrap().into_response();
+
+        let location = response.headers().get(LOCATION).unwrap().to_str().unwrap();
+        assert!(location
+            .contains("redirect_uri=https%3A%2F%2Fexample.com%2Fapi%2Fauth%2Fgithub%2Fcallback"));
+        assert!(!location.contains("example.com%2F%2Fapi"));
     }
 
     #[tokio::test]
@@ -465,5 +496,42 @@ mod tests {
                 .unwrap();
 
         assert!(token.is_none());
+    }
+
+    #[tokio::test]
+    async fn dev_connect_is_rejected_when_oauth_is_configured() {
+        let mut config = Config::test();
+        config.github_client_id = Some("test-client".to_string());
+        config.github_client_secret = Some("test-secret".to_string());
+        let pool = connect(&config).await.unwrap();
+        let state = AppState {
+            repositories: RepositoryStore::new(pool.clone()),
+            pool: pool.clone(),
+            config,
+            github_client: None,
+        };
+
+        let result = dev_connect(
+            State(state),
+            Json(DevConnectRequest {
+                username: "local-dev".to_string(),
+            }),
+        )
+        .await;
+        let response = match result {
+            Ok(_) => panic!("dev-connect should be rejected when OAuth is configured"),
+            Err(error) => error.into_response(),
+        };
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let connected: Option<i64> =
+            sqlx::query_scalar("SELECT connected FROM auth_state WHERE id = 1")
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+        assert!(connected.is_none());
     }
 }
