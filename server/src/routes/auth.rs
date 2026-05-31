@@ -11,6 +11,7 @@ use axum::{
 };
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use uuid::Uuid;
 
 pub fn router() -> Router<AppState> {
@@ -74,7 +75,7 @@ async fn github_start(State(state): State<AppState>) -> Result<Redirect, ApiErro
     .execute(&state.pool)
     .await?;
 
-    let redirect_uri = format!("{}/api/auth/github/callback", state.config.public_base_url);
+    let redirect_uri = github_callback_url(&state);
     let location = Url::parse_with_params(
         "https://github.com/login/oauth/authorize",
         &[
@@ -114,7 +115,8 @@ async fn github_callback(
         .code
         .ok_or_else(|| ApiError::OAuth("GitHub OAuth callback did not include code".to_string()))?;
     let (client_id, client_secret) = github_oauth_config(&state)?;
-    let access_token = exchange_github_code(client_id, client_secret, &code).await?;
+    let redirect_uri = github_callback_url(&state);
+    let access_token = exchange_github_code(client_id, client_secret, &code, &redirect_uri).await?;
     let username = fetch_github_username(&access_token).await?;
 
     sqlx::query(
@@ -141,16 +143,18 @@ async fn exchange_github_code(
     client_id: &str,
     client_secret: &str,
     code: &str,
+    redirect_uri: &str,
 ) -> Result<String, ApiError> {
-    let client = reqwest::Client::new();
+    let client = github_oauth_http_client()?;
     let response = client
         .post("https://github.com/login/oauth/access_token")
         .header("accept", "application/json")
-        .form(&[
-            ("client_id", client_id),
-            ("client_secret", client_secret),
-            ("code", code),
-        ])
+        .form(&github_token_exchange_form(
+            client_id,
+            client_secret,
+            code,
+            redirect_uri,
+        ))
         .send()
         .await
         .map_err(|error| ApiError::OAuth(error.to_string()))?;
@@ -170,7 +174,7 @@ async fn exchange_github_code(
 }
 
 async fn fetch_github_username(access_token: &str) -> Result<String, ApiError> {
-    let client = reqwest::Client::new();
+    let client = github_oauth_http_client()?;
     let response = client
         .get("https://api.github.com/user")
         .bearer_auth(access_token)
@@ -192,6 +196,35 @@ async fn fetch_github_username(access_token: &str) -> Result<String, ApiError> {
         .await
         .map_err(|error| ApiError::OAuth(error.to_string()))?;
     parse_user_response(&body).map_err(|error| ApiError::OAuth(error.to_string()))
+}
+
+fn github_callback_url(state: &AppState) -> String {
+    format!("{}/api/auth/github/callback", state.config.public_base_url)
+}
+
+fn github_token_exchange_form<'a>(
+    client_id: &'a str,
+    client_secret: &'a str,
+    code: &'a str,
+    redirect_uri: &'a str,
+) -> Vec<(&'static str, &'a str)> {
+    vec![
+        ("client_id", client_id),
+        ("client_secret", client_secret),
+        ("code", code),
+        ("redirect_uri", redirect_uri),
+    ]
+}
+
+fn github_oauth_http_timeout() -> Duration {
+    crate::github::GITHUB_HTTP_TIMEOUT
+}
+
+fn github_oauth_http_client() -> Result<reqwest::Client, ApiError> {
+    reqwest::Client::builder()
+        .timeout(github_oauth_http_timeout())
+        .build()
+        .map_err(|error| ApiError::OAuth(error.to_string()))
 }
 
 async fn auth_state(State(state): State<AppState>) -> Result<Json<AuthStateResponse>, ApiError> {
@@ -328,6 +361,29 @@ mod tests {
         assert_eq!(
             response.status(),
             axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[test]
+    fn github_token_exchange_form_includes_redirect_uri() {
+        let form = github_token_exchange_form(
+            "test-client",
+            "test-secret",
+            "code-from-github",
+            "http://127.0.0.1:4317/api/auth/github/callback",
+        );
+
+        assert!(form.contains(&(
+            "redirect_uri",
+            "http://127.0.0.1:4317/api/auth/github/callback"
+        )));
+    }
+
+    #[test]
+    fn github_oauth_http_timeout_matches_discovery_client() {
+        assert_eq!(
+            github_oauth_http_timeout(),
+            crate::github::GITHUB_HTTP_TIMEOUT
         );
     }
 

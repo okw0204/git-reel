@@ -5,7 +5,7 @@ use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::Deserialize;
 use std::time::Duration as StdDuration;
 
-const GITHUB_HTTP_TIMEOUT: StdDuration = StdDuration::from_secs(10);
+pub(crate) const GITHUB_HTTP_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 
 #[derive(Debug, thiserror::Error)]
 pub enum GitHubError {
