@@ -5,7 +5,8 @@ use crate::{
 };
 use axum::{
     extract::{Query, State},
-    response::Redirect,
+    http::{header, HeaderMap, HeaderValue},
+    response::{IntoResponse, Redirect, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -13,6 +14,8 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use uuid::Uuid;
+
+const OAUTH_STATE_COOKIE: &str = "git_reel_oauth_state";
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -59,7 +62,7 @@ fn github_oauth_config(state: &AppState) -> Result<(&str, &str), ApiError> {
     Ok((client_id, client_secret))
 }
 
-async fn github_start(State(state): State<AppState>) -> Result<Redirect, ApiError> {
+async fn github_start(State(state): State<AppState>) -> Result<Response, ApiError> {
     let (client_id, _) = github_oauth_config(&state)?;
     let oauth_state = Uuid::new_v4().to_string();
     sqlx::query(
@@ -83,20 +86,36 @@ async fn github_start(State(state): State<AppState>) -> Result<Redirect, ApiErro
         ],
     )
     .map_err(|error| ApiError::OAuth(error.to_string()))?;
-    Ok(Redirect::temporary(location.as_str()))
+    let mut response = Redirect::temporary(location.as_str()).into_response();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&oauth_state_cookie(&oauth_state))
+            .map_err(|error| ApiError::OAuth(error.to_string()))?,
+    );
+    Ok(response)
 }
 
 async fn github_callback(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(query): Query<GitHubCallbackQuery>,
-) -> Result<Redirect, ApiError> {
+) -> Result<Response, ApiError> {
     if query.error.is_some() {
-        return Ok(Redirect::to(&state.config.public_app_url));
+        return redirect_to_public_app(&state);
     }
 
     let returned_state = query.state.ok_or_else(|| {
         ApiError::OAuth("GitHub OAuth callback did not include state".to_string())
     })?;
+    let cookie_state = oauth_state_cookie_value(&headers).ok_or_else(|| {
+        ApiError::OAuth("GitHub OAuth callback did not include state cookie".to_string())
+    })?;
+    if cookie_state != returned_state {
+        return Err(ApiError::OAuth(
+            "GitHub OAuth callback state cookie did not match".to_string(),
+        ));
+    }
+
     let deleted_rows = sqlx::query("DELETE FROM oauth_states WHERE state = ?")
         .bind(&returned_state)
         .execute(&state.pool)
@@ -132,7 +151,7 @@ async fn github_callback(
     .execute(&state.pool)
     .await?;
 
-    Ok(Redirect::to(&state.config.public_app_url))
+    redirect_to_public_app(&state)
 }
 
 async fn exchange_github_code(
@@ -199,6 +218,38 @@ fn github_callback_url(state: &AppState) -> String {
         "{}/api/auth/github/callback",
         state.config.public_base_url.trim_end_matches('/')
     )
+}
+
+fn oauth_state_cookie(state: &str) -> String {
+    format!(
+        "{OAUTH_STATE_COOKIE}={state}; Path=/api/auth/github/callback; HttpOnly; SameSite=Lax; Max-Age=600"
+    )
+}
+
+fn clear_oauth_state_cookie() -> String {
+    format!(
+        "{OAUTH_STATE_COOKIE}=; Path=/api/auth/github/callback; HttpOnly; SameSite=Lax; Max-Age=0"
+    )
+}
+
+fn oauth_state_cookie_value(headers: &HeaderMap) -> Option<String> {
+    let cookie_header = headers.get(header::COOKIE)?.to_str().ok()?;
+    cookie_header.split(';').find_map(|cookie| {
+        cookie
+            .trim()
+            .strip_prefix(&format!("{OAUTH_STATE_COOKIE}="))
+            .map(str::to_string)
+    })
+}
+
+fn redirect_to_public_app(state: &AppState) -> Result<Response, ApiError> {
+    let mut response = Redirect::to(&state.config.public_app_url).into_response();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&clear_oauth_state_cookie())
+            .map_err(|error| ApiError::OAuth(error.to_string()))?,
+    );
+    Ok(response)
 }
 
 fn github_token_exchange_form<'a>(
@@ -276,7 +327,10 @@ async fn dev_connect(
 mod tests {
     use super::*;
     use crate::{config::Config, db::connect, repositories::RepositoryStore};
-    use axum::{http::header::LOCATION, response::IntoResponse};
+    use axum::{
+        http::{header::LOCATION, HeaderMap},
+        response::IntoResponse,
+    };
 
     #[tokio::test]
     async fn github_start_encodes_redirect_uri() {
@@ -351,6 +405,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn github_start_sets_oauth_state_cookie() {
+        let mut config = Config::test();
+        config.github_client_id = Some("test-client".to_string());
+        config.github_client_secret = Some("test-secret".to_string());
+        let pool = connect(&config).await.unwrap();
+        let state = AppState {
+            repositories: RepositoryStore::new(pool.clone()),
+            pool: pool.clone(),
+            config,
+            github_client: None,
+        };
+
+        let response = github_start(State(state)).await.unwrap().into_response();
+        let oauth_state: String = sqlx::query_scalar("SELECT state FROM oauth_states")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let cookie = response
+            .headers()
+            .get(axum::http::header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+
+        assert!(cookie.contains(&format!("git_reel_oauth_state={oauth_state}")));
+        assert!(cookie.contains("HttpOnly"));
+        assert!(cookie.contains("SameSite=Lax"));
+    }
+
+    #[tokio::test]
     async fn github_start_keeps_multiple_pending_oauth_states() {
         let mut config = Config::test();
         config.github_client_id = Some("test-client".to_string());
@@ -421,6 +505,7 @@ mod tests {
 
         let response = github_callback(
             State(state),
+            HeaderMap::new(),
             Query(GitHubCallbackQuery {
                 code: Some("code-from-github".to_string()),
                 error: None,
@@ -435,6 +520,48 @@ mod tests {
             response.status(),
             axum::http::StatusCode::INTERNAL_SERVER_ERROR
         );
+    }
+
+    #[tokio::test]
+    async fn github_callback_rejects_matching_state_without_cookie() {
+        let mut config = Config::test();
+        config.github_client_id = Some("test-client".to_string());
+        config.github_client_secret = Some("test-secret".to_string());
+        let pool = connect(&config).await.unwrap();
+        sqlx::query("INSERT INTO oauth_states (state) VALUES ('expected-state')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let state = AppState {
+            repositories: RepositoryStore::new(pool.clone()),
+            pool: pool.clone(),
+            config,
+            github_client: None,
+        };
+
+        let response = github_callback(
+            State(state),
+            HeaderMap::new(),
+            Query(GitHubCallbackQuery {
+                code: Some("code-from-github".to_string()),
+                error: None,
+                state: Some("expected-state".to_string()),
+            }),
+        )
+        .await
+        .unwrap_err()
+        .into_response();
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let state_still_pending: Option<String> =
+            sqlx::query_scalar("SELECT state FROM oauth_states WHERE state = 'expected-state'")
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+        assert_eq!(state_still_pending.as_deref(), Some("expected-state"));
     }
 
     #[test]
