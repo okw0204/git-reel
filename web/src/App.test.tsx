@@ -41,7 +41,14 @@ describe("App", () => {
   test("未接続時に GitHub OAuth 接続へ遷移できる", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
-      if (path === "/api/auth/state") return Response.json({ connected: false, username: null, oauth_configured: true });
+      if (path === "/api/auth/state") {
+        return Response.json({
+          connected: false,
+          username: null,
+          oauth_configured: true,
+          oauth_start_url: "http://127.0.0.1:4317/api/auth/github/start"
+        });
+      }
       if (path === "/api/reel/current") return Response.json({ repository: null, empty_reason: "auth_required" });
       return Response.json({ ok: true });
     }));
@@ -53,7 +60,7 @@ describe("App", () => {
     await screen.findByText("GitHubに接続するとリールを開始できます");
     await userEvent.click(screen.getByRole("button", { name: "GitHubに接続" }));
 
-    expect(window.location.href).toBe("/api/auth/github/start");
+    expect(window.location.href).toBe("http://127.0.0.1:4317/api/auth/github/start");
   });
 
   test("OAuth 未設定のローカル環境では開発用接続でリールを表示できる", async () => {

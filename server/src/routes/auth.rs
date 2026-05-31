@@ -30,6 +30,7 @@ struct AuthStateResponse {
     connected: bool,
     username: Option<String>,
     oauth_configured: bool,
+    oauth_start_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -227,6 +228,13 @@ fn github_callback_url(state: &AppState) -> String {
     )
 }
 
+fn github_start_url(state: &AppState) -> String {
+    format!(
+        "{}/api/auth/github/start",
+        state.config.public_base_url.trim_end_matches('/')
+    )
+}
+
 fn oauth_state_cookie(state: &str) -> String {
     format!(
         "{OAUTH_STATE_COOKIE}={state}; Path=/api/auth/github/callback; HttpOnly; SameSite=Lax; Max-Age=600"
@@ -293,6 +301,7 @@ async fn auth_state(State(state): State<AppState>) -> Result<Json<AuthStateRespo
         connected: row.as_ref().map(|r| r.0 == 1).unwrap_or(false),
         username: row.and_then(|r| r.1),
         oauth_configured: github_oauth_configured(&state),
+        oauth_start_url: github_oauth_configured(&state).then(|| github_start_url(&state)),
     }))
 }
 
@@ -327,6 +336,7 @@ async fn dev_connect(
         connected: true,
         username: Some(payload.username),
         oauth_configured: github_oauth_configured(&state),
+        oauth_start_url: github_oauth_configured(&state).then(|| github_start_url(&state)),
     }))
 }
 
@@ -363,6 +373,28 @@ mod tests {
         ));
         assert!(location.contains("scope=read%3Auser"));
         assert!(location.contains("state="));
+    }
+
+    #[tokio::test]
+    async fn auth_state_exposes_absolute_oauth_start_url() {
+        let mut config = Config::test();
+        config.github_client_id = Some("test-client".to_string());
+        config.github_client_secret = Some("test-secret".to_string());
+        config.public_base_url = "http://127.0.0.1:4317".to_string();
+        let pool = connect(&config).await.unwrap();
+        let state = AppState {
+            repositories: RepositoryStore::new(pool.clone()),
+            pool,
+            config,
+            github_client: None,
+        };
+
+        let Json(response) = auth_state(State(state)).await.unwrap();
+
+        assert_eq!(
+            response.oauth_start_url.as_deref(),
+            Some("http://127.0.0.1:4317/api/auth/github/start")
+        );
     }
 
     #[tokio::test]

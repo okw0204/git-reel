@@ -36,7 +36,7 @@ export function ReelScreen({ auth, onAuthChange }: ReelScreenProps) {
 
   const connect = async () => {
     if (auth.oauth_configured) {
-      window.location.href = "/api/auth/github/start";
+      window.location.href = auth.oauth_start_url ?? "/api/auth/github/start";
       return;
     }
 
