@@ -101,6 +101,9 @@ async fn github_callback(
     Query(query): Query<GitHubCallbackQuery>,
 ) -> Result<Response, ApiError> {
     if query.error.is_some() {
+        if let Some(returned_state) = query.state.as_deref() {
+            delete_oauth_state(&state, returned_state).await?;
+        }
         return redirect_to_public_app(&state);
     }
 
@@ -116,11 +119,7 @@ async fn github_callback(
         ));
     }
 
-    let deleted_rows = sqlx::query("DELETE FROM oauth_states WHERE state = ?")
-        .bind(&returned_state)
-        .execute(&state.pool)
-        .await?
-        .rows_affected();
+    let deleted_rows = delete_oauth_state(&state, &returned_state).await?;
     if deleted_rows == 0 {
         return Err(ApiError::OAuth(
             "GitHub OAuth callback state did not match".to_string(),
@@ -152,6 +151,14 @@ async fn github_callback(
     .await?;
 
     redirect_to_public_app(&state)
+}
+
+async fn delete_oauth_state(state: &AppState, oauth_state: &str) -> Result<u64, ApiError> {
+    Ok(sqlx::query("DELETE FROM oauth_states WHERE state = ?")
+        .bind(oauth_state)
+        .execute(&state.pool)
+        .await?
+        .rows_affected())
 }
 
 async fn exchange_github_code(
@@ -562,6 +569,43 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(state_still_pending.as_deref(), Some("expected-state"));
+    }
+
+    #[tokio::test]
+    async fn github_callback_error_deletes_matching_pending_state() {
+        let mut config = Config::test();
+        config.github_client_id = Some("test-client".to_string());
+        config.github_client_secret = Some("test-secret".to_string());
+        let pool = connect(&config).await.unwrap();
+        sqlx::query("INSERT INTO oauth_states (state) VALUES ('cancelled-state')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let state = AppState {
+            repositories: RepositoryStore::new(pool.clone()),
+            pool: pool.clone(),
+            config,
+            github_client: None,
+        };
+
+        let _ = github_callback(
+            State(state),
+            HeaderMap::new(),
+            Query(GitHubCallbackQuery {
+                code: None,
+                error: Some("access_denied".to_string()),
+                state: Some("cancelled-state".to_string()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let state_still_pending: Option<String> =
+            sqlx::query_scalar("SELECT state FROM oauth_states WHERE state = 'cancelled-state'")
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+        assert!(state_still_pending.is_none());
     }
 
     #[test]
