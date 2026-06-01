@@ -3,18 +3,30 @@ use async_trait::async_trait;
 use chrono::{Duration, NaiveDate, Utc};
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::Deserialize;
-use std::time::Duration as StdDuration;
+use std::{sync::Arc, time::Duration as StdDuration};
 
 pub(crate) const GITHUB_HTTP_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum GitHubError {
     #[error("github http error: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(Arc<reqwest::Error>),
     #[error("github http status: {0}")]
     HttpStatus(reqwest::StatusCode),
     #[error("json error: {0}")]
-    Json(#[from] serde_json::Error),
+    Json(Arc<serde_json::Error>),
+}
+
+impl From<reqwest::Error> for GitHubError {
+    fn from(error: reqwest::Error) -> Self {
+        Self::Http(Arc::new(error))
+    }
+}
+
+impl From<serde_json::Error> for GitHubError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::Json(Arc::new(error))
+    }
 }
 
 #[async_trait]

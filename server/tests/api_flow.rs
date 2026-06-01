@@ -44,8 +44,7 @@ impl GitHubDiscoveryClient for FakeGitHubClient {
     ) -> Result<(String, Vec<NewRepository>), GitHubError> {
         match &self.result {
             Ok((query, repositories)) => Ok((query.clone(), repositories.clone())),
-            Err(GitHubError::HttpStatus(status)) => Err(GitHubError::HttpStatus(*status)),
-            Err(_) => Err(GitHubError::HttpStatus(StatusCode::FORBIDDEN)),
+            Err(error) => Err(error.clone()),
         }
     }
 }
@@ -65,6 +64,21 @@ async fn fake_github_discovery_client_returns_configured_http_status_error() {
         error,
         GitHubError::HttpStatus(StatusCode::UNAUTHORIZED)
     ));
+}
+
+#[tokio::test]
+async fn fake_github_discovery_client_returns_configured_json_error() {
+    let configured = serde_json::from_str::<Value>("not json").unwrap_err();
+    let client = FakeGitHubClient {
+        result: Err(GitHubError::Json(Arc::new(configured))),
+    };
+
+    let error = client
+        .search_recently_updated_repositories()
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, GitHubError::Json(_)));
 }
 
 #[tokio::test]
