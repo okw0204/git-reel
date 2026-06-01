@@ -5,8 +5,10 @@ use futures_util::future::join_all;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Duration as StdDuration};
+use tokio::time::timeout;
 
 pub(crate) const GITHUB_HTTP_TIMEOUT: StdDuration = StdDuration::from_secs(10);
+const README_PREVIEW_TIMEOUT: StdDuration = StdDuration::from_secs(2);
 const README_PREVIEW_MAX_CHARS: usize = 1_000;
 
 #[derive(Clone, Debug, thiserror::Error)]
@@ -105,25 +107,35 @@ impl GitHubDiscoveryClient for GitHubClient {
 
         let body = response.text().await?;
         let mut repositories = parse_search_response(&body)?;
-        let readme_requests = repositories
-            .iter()
-            .map(|repository| {
-                let owner = repository.owner.clone();
-                let name = repository.name.clone();
-                async move { self.readme_preview(&owner, &name).await }
-            })
-            .collect::<Vec<_>>();
+        let readme_requests =
+            repositories
+                .iter()
+                .map(|repository| {
+                    let owner = repository.owner.clone();
+                    let name = repository.name.clone();
+                    async move {
+                        timeout(README_PREVIEW_TIMEOUT, self.readme_preview(&owner, &name)).await
+                    }
+                })
+                .collect::<Vec<_>>();
 
         for (repository, preview) in repositories.iter_mut().zip(join_all(readme_requests).await) {
             match preview {
-                Ok(preview) => {
+                Ok(Ok(preview)) => {
                     repository.readme_preview = preview;
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(
+                        ?error,
+                        repository = %repository.full_name,
+                        "github readme preview failed; keeping repository without preview"
+                    );
                 }
                 Err(error) => {
                     tracing::warn!(
                         ?error,
                         repository = %repository.full_name,
-                        "github readme preview failed; keeping repository without preview"
+                        "github readme preview timed out; keeping repository without preview"
                     );
                 }
             }
@@ -284,12 +296,18 @@ pub fn parse_user_response(body: &str) -> Result<String, GitHubError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{recently_updated_search_params, GITHUB_HTTP_TIMEOUT};
+    use super::{recently_updated_search_params, GITHUB_HTTP_TIMEOUT, README_PREVIEW_TIMEOUT};
     use std::time::Duration;
 
     #[test]
     fn github_http_timeout_is_explicit() {
         assert_eq!(GITHUB_HTTP_TIMEOUT, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn readme_preview_timeout_is_shorter_than_github_http_timeout() {
+        assert_eq!(README_PREVIEW_TIMEOUT, Duration::from_secs(2));
+        assert!(README_PREVIEW_TIMEOUT < GITHUB_HTTP_TIMEOUT);
     }
 
     #[test]
