@@ -1,6 +1,8 @@
 export type AuthState = {
   connected: boolean;
   username: string | null;
+  oauth_configured: boolean;
+  oauth_start_url: string | null;
 };
 
 export type Repository = {

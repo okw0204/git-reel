@@ -11,7 +11,12 @@ type View = "reel" | "saved" | "history" | "settings";
 
 export default function App() {
   const [view, setView] = useState<View>("reel");
-  const [auth, setAuth] = useState<AuthState>({ connected: false, username: null });
+  const [auth, setAuth] = useState<AuthState>({
+    connected: false,
+    username: null,
+    oauth_configured: false,
+    oauth_start_url: null
+  });
 
   useEffect(() => {
     // 初期表示時にローカルの接続状態を復元し、リール画面の空状態を決める。

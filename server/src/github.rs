@@ -5,7 +5,7 @@ use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::Deserialize;
 use std::time::Duration as StdDuration;
 
-const GITHUB_HTTP_TIMEOUT: StdDuration = StdDuration::from_secs(10);
+pub(crate) const GITHUB_HTTP_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 
 #[derive(Debug, thiserror::Error)]
 pub enum GitHubError {
@@ -83,6 +83,16 @@ fn recently_updated_search_params(query: &str) -> Vec<(&'static str, String)> {
         ("sort", "updated".to_string()),
         ("order", "desc".to_string()),
     ]
+}
+
+#[derive(Deserialize)]
+struct OAuthTokenResponse {
+    access_token: String,
+}
+
+#[derive(Deserialize)]
+struct UserResponse {
+    login: String,
 }
 
 #[derive(Deserialize)]
@@ -176,6 +186,16 @@ pub fn parse_graphql_readme_preview(body: &str) -> Result<Option<String>, GitHub
         .repository
         .and_then(|repository| repository.object)
         .map(|object| object.text))
+}
+
+pub fn parse_oauth_token_response(body: &str) -> Result<String, GitHubError> {
+    let response: OAuthTokenResponse = serde_json::from_str(body)?;
+    Ok(response.access_token)
+}
+
+pub fn parse_user_response(body: &str) -> Result<String, GitHubError> {
+    let response: UserResponse = serde_json::from_str(body)?;
+    Ok(response.login)
 }
 
 #[cfg(test)]

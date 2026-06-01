@@ -14,7 +14,7 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: "GIT_REEL_DATABASE_URL=sqlite::memory: cargo run --manifest-path server/Cargo.toml",
+      command: "env -u GITHUB_CLIENT_ID -u GITHUB_CLIENT_SECRET GIT_REEL_DATABASE_URL=sqlite::memory: cargo run --manifest-path server/Cargo.toml",
       cwd: "..",
       url: "http://127.0.0.1:4317/api/health",
       reuseExistingServer: true,

@@ -14,6 +14,7 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 pub struct AppState {
     pub pool: SqlitePool,
     pub repositories: RepositoryStore,
+    pub config: Config,
     pub github_client: Option<Arc<dyn GitHubDiscoveryClient>>,
 }
 
@@ -36,6 +37,7 @@ async fn build_app_with_config(config: Config) -> anyhow::Result<Router> {
         repositories: RepositoryStore::new(pool.clone()),
         github_client,
         pool,
+        config,
     };
 
     // フロントエンドからは /api/* だけを見ればよいように、機能単位でルートを分ける。

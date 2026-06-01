@@ -1,26 +1,295 @@
-use crate::{app::AppState, error::ApiError};
+use crate::{
+    app::AppState,
+    error::ApiError,
+    github::{parse_oauth_token_response, parse_user_response},
+};
 use axum::{
-    extract::State,
+    extract::{Query, State},
+    http::{header, HeaderMap, HeaderValue},
+    response::{IntoResponse, Redirect, Response},
     routing::{get, post},
     Json, Router,
 };
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
+use uuid::Uuid;
+
+const OAUTH_STATE_COOKIE: &str = "git_reel_oauth_state";
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/state", get(auth_state))
         .route("/dev-connect", post(dev_connect))
+        .route("/github/start", get(github_start))
+        .route("/github/callback", get(github_callback))
 }
 
 #[derive(Serialize)]
 struct AuthStateResponse {
     connected: bool,
     username: Option<String>,
+    oauth_configured: bool,
+    oauth_start_url: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct DevConnectRequest {
     username: String,
+}
+
+#[derive(Deserialize)]
+struct GitHubCallbackQuery {
+    code: Option<String>,
+    error: Option<String>,
+    state: Option<String>,
+}
+
+fn github_oauth_configured(state: &AppState) -> bool {
+    state.config.github_client_id.is_some() && state.config.github_client_secret.is_some()
+}
+
+fn github_oauth_config(state: &AppState) -> Result<(&str, &str), ApiError> {
+    let client_id = state
+        .config
+        .github_client_id
+        .as_deref()
+        .ok_or_else(|| ApiError::OAuth("GITHUB_CLIENT_ID is not configured".to_string()))?;
+    let client_secret = state
+        .config
+        .github_client_secret
+        .as_deref()
+        .ok_or_else(|| ApiError::OAuth("GITHUB_CLIENT_SECRET is not configured".to_string()))?;
+    Ok((client_id, client_secret))
+}
+
+async fn github_start(State(state): State<AppState>) -> Result<Response, ApiError> {
+    let (client_id, _) = github_oauth_config(&state)?;
+    let oauth_state = Uuid::new_v4().to_string();
+    sqlx::query(
+        r#"
+        INSERT INTO oauth_states (state)
+        VALUES (?)
+        "#,
+    )
+    .bind(&oauth_state)
+    .execute(&state.pool)
+    .await?;
+
+    let redirect_uri = github_callback_url(&state);
+    let location = Url::parse_with_params(
+        "https://github.com/login/oauth/authorize",
+        &[
+            ("client_id", client_id),
+            ("redirect_uri", redirect_uri.as_str()),
+            ("scope", "read:user"),
+            ("state", oauth_state.as_str()),
+        ],
+    )
+    .map_err(|error| ApiError::OAuth(error.to_string()))?;
+    let mut response = Redirect::temporary(location.as_str()).into_response();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&oauth_state_cookie(&oauth_state))
+            .map_err(|error| ApiError::OAuth(error.to_string()))?,
+    );
+    Ok(response)
+}
+
+async fn github_callback(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<GitHubCallbackQuery>,
+) -> Result<Response, ApiError> {
+    if query.error.is_some() {
+        if let Some(returned_state) = query.state.as_deref() {
+            delete_oauth_state(&state, returned_state).await?;
+        }
+        return redirect_to_public_app(&state);
+    }
+
+    let returned_state = query.state.ok_or_else(|| {
+        ApiError::OAuth("GitHub OAuth callback did not include state".to_string())
+    })?;
+    let cookie_state = oauth_state_cookie_value(&headers).ok_or_else(|| {
+        ApiError::OAuth("GitHub OAuth callback did not include state cookie".to_string())
+    })?;
+    if cookie_state != returned_state {
+        return Err(ApiError::OAuth(
+            "GitHub OAuth callback state cookie did not match".to_string(),
+        ));
+    }
+
+    let deleted_rows = delete_oauth_state(&state, &returned_state).await?;
+    if deleted_rows == 0 {
+        return Err(ApiError::OAuth(
+            "GitHub OAuth callback state did not match".to_string(),
+        ));
+    }
+
+    let code = query
+        .code
+        .ok_or_else(|| ApiError::OAuth("GitHub OAuth callback did not include code".to_string()))?;
+    let (client_id, client_secret) = github_oauth_config(&state)?;
+    let redirect_uri = github_callback_url(&state);
+    let access_token = exchange_github_code(client_id, client_secret, &code, &redirect_uri).await?;
+    let username = fetch_github_username(&access_token).await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          connected = 1,
+          username = excluded.username,
+          access_token = excluded.access_token,
+          updated_at = CURRENT_TIMESTAMP
+        "#,
+    )
+    .bind(&username)
+    .bind(&access_token)
+    .execute(&state.pool)
+    .await?;
+
+    redirect_to_public_app(&state)
+}
+
+async fn delete_oauth_state(state: &AppState, oauth_state: &str) -> Result<u64, ApiError> {
+    Ok(sqlx::query("DELETE FROM oauth_states WHERE state = ?")
+        .bind(oauth_state)
+        .execute(&state.pool)
+        .await?
+        .rows_affected())
+}
+
+async fn exchange_github_code(
+    client_id: &str,
+    client_secret: &str,
+    code: &str,
+    redirect_uri: &str,
+) -> Result<String, ApiError> {
+    let client = github_oauth_http_client()?;
+    let response = client
+        .post("https://github.com/login/oauth/access_token")
+        .header("accept", "application/json")
+        .form(&github_token_exchange_form(
+            client_id,
+            client_secret,
+            code,
+            redirect_uri,
+        ))
+        .send()
+        .await
+        .map_err(|error| ApiError::OAuth(error.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(ApiError::OAuth(format!(
+            "GitHub token endpoint returned {}",
+            response.status()
+        )));
+    }
+
+    let body = response
+        .text()
+        .await
+        .map_err(|error| ApiError::OAuth(error.to_string()))?;
+    parse_oauth_token_response(&body).map_err(|error| ApiError::OAuth(error.to_string()))
+}
+
+async fn fetch_github_username(access_token: &str) -> Result<String, ApiError> {
+    let client = github_oauth_http_client()?;
+    let response = client
+        .get("https://api.github.com/user")
+        .bearer_auth(access_token)
+        .header("accept", "application/vnd.github+json")
+        .header("user-agent", "git-reel")
+        .send()
+        .await
+        .map_err(|error| ApiError::OAuth(error.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(ApiError::OAuth(format!(
+            "GitHub user endpoint returned {}",
+            response.status()
+        )));
+    }
+
+    let body = response
+        .text()
+        .await
+        .map_err(|error| ApiError::OAuth(error.to_string()))?;
+    parse_user_response(&body).map_err(|error| ApiError::OAuth(error.to_string()))
+}
+
+fn github_callback_url(state: &AppState) -> String {
+    format!(
+        "{}/api/auth/github/callback",
+        state.config.public_base_url.trim_end_matches('/')
+    )
+}
+
+fn github_start_url(state: &AppState) -> String {
+    format!(
+        "{}/api/auth/github/start",
+        state.config.public_base_url.trim_end_matches('/')
+    )
+}
+
+fn oauth_state_cookie(state: &str) -> String {
+    format!(
+        "{OAUTH_STATE_COOKIE}={state}; Path=/api/auth/github/callback; HttpOnly; SameSite=Lax; Max-Age=600"
+    )
+}
+
+fn clear_oauth_state_cookie() -> String {
+    format!(
+        "{OAUTH_STATE_COOKIE}=; Path=/api/auth/github/callback; HttpOnly; SameSite=Lax; Max-Age=0"
+    )
+}
+
+fn oauth_state_cookie_value(headers: &HeaderMap) -> Option<String> {
+    let cookie_header = headers.get(header::COOKIE)?.to_str().ok()?;
+    cookie_header.split(';').find_map(|cookie| {
+        cookie
+            .trim()
+            .strip_prefix(&format!("{OAUTH_STATE_COOKIE}="))
+            .map(str::to_string)
+    })
+}
+
+fn redirect_to_public_app(state: &AppState) -> Result<Response, ApiError> {
+    let mut response = Redirect::to(&state.config.public_app_url).into_response();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&clear_oauth_state_cookie())
+            .map_err(|error| ApiError::OAuth(error.to_string()))?,
+    );
+    Ok(response)
+}
+
+fn github_token_exchange_form<'a>(
+    client_id: &'a str,
+    client_secret: &'a str,
+    code: &'a str,
+    redirect_uri: &'a str,
+) -> Vec<(&'static str, &'a str)> {
+    vec![
+        ("client_id", client_id),
+        ("client_secret", client_secret),
+        ("code", code),
+        ("redirect_uri", redirect_uri),
+    ]
+}
+
+fn github_oauth_http_timeout() -> Duration {
+    crate::github::GITHUB_HTTP_TIMEOUT
+}
+
+fn github_oauth_http_client() -> Result<reqwest::Client, ApiError> {
+    reqwest::Client::builder()
+        .timeout(github_oauth_http_timeout())
+        .build()
+        .map_err(|error| ApiError::OAuth(error.to_string()))
 }
 
 async fn auth_state(State(state): State<AppState>) -> Result<Json<AuthStateResponse>, ApiError> {
@@ -31,6 +300,8 @@ async fn auth_state(State(state): State<AppState>) -> Result<Json<AuthStateRespo
     Ok(Json(AuthStateResponse {
         connected: row.as_ref().map(|r| r.0 == 1).unwrap_or(false),
         username: row.and_then(|r| r.1),
+        oauth_configured: github_oauth_configured(&state),
+        oauth_start_url: github_oauth_configured(&state).then(|| github_start_url(&state)),
     }))
 }
 
@@ -39,13 +310,21 @@ async fn dev_connect(
     State(state): State<AppState>,
     Json(payload): Json<DevConnectRequest>,
 ) -> Result<Json<AuthStateResponse>, ApiError> {
+    if github_oauth_configured(&state) {
+        return Err(ApiError::OAuth(
+            "dev-connect is disabled when GitHub OAuth is configured".to_string(),
+        ));
+    }
+
     sqlx::query(
         r#"
-        INSERT INTO auth_state (id, connected, username)
-        VALUES (1, 1, ?)
+        INSERT INTO auth_state (id, connected, username, access_token, oauth_state)
+        VALUES (1, 1, ?, NULL, NULL)
         ON CONFLICT(id) DO UPDATE SET
           connected = 1,
           username = excluded.username,
+          access_token = excluded.access_token,
+          oauth_state = excluded.oauth_state,
           updated_at = CURRENT_TIMESTAMP
         "#,
     )
@@ -56,5 +335,406 @@ async fn dev_connect(
     Ok(Json(AuthStateResponse {
         connected: true,
         username: Some(payload.username),
+        oauth_configured: github_oauth_configured(&state),
+        oauth_start_url: github_oauth_configured(&state).then(|| github_start_url(&state)),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{config::Config, db::connect, repositories::RepositoryStore};
+    use axum::{
+        http::{header::LOCATION, HeaderMap},
+        response::IntoResponse,
+    };
+
+    #[tokio::test]
+    async fn github_start_encodes_redirect_uri() {
+        let mut config = Config::test();
+        config.github_client_id = Some("test-client".to_string());
+        config.github_client_secret = Some("test-secret".to_string());
+        config.public_base_url = "http://127.0.0.1:4317".to_string();
+        let pool = connect(&config).await.unwrap();
+        let state = AppState {
+            repositories: RepositoryStore::new(pool.clone()),
+            pool,
+            config,
+            github_client: None,
+        };
+
+        let response = github_start(State(state)).await.unwrap().into_response();
+
+        let location = response.headers().get(LOCATION).unwrap().to_str().unwrap();
+        assert!(location.starts_with("https://github.com/login/oauth/authorize?"));
+        assert!(location.contains("client_id=test-client"));
+        assert!(location.contains(
+            "redirect_uri=http%3A%2F%2F127.0.0.1%3A4317%2Fapi%2Fauth%2Fgithub%2Fcallback"
+        ));
+        assert!(location.contains("scope=read%3Auser"));
+        assert!(location.contains("state="));
+    }
+
+    #[tokio::test]
+    async fn auth_state_exposes_absolute_oauth_start_url() {
+        let mut config = Config::test();
+        config.github_client_id = Some("test-client".to_string());
+        config.github_client_secret = Some("test-secret".to_string());
+        config.public_base_url = "http://127.0.0.1:4317".to_string();
+        let pool = connect(&config).await.unwrap();
+        let state = AppState {
+            repositories: RepositoryStore::new(pool.clone()),
+            pool,
+            config,
+            github_client: None,
+        };
+
+        let Json(response) = auth_state(State(state)).await.unwrap();
+
+        assert_eq!(
+            response.oauth_start_url.as_deref(),
+            Some("http://127.0.0.1:4317/api/auth/github/start")
+        );
+    }
+
+    #[tokio::test]
+    async fn github_start_normalizes_trailing_slash_in_public_base_url() {
+        let mut config = Config::test();
+        config.github_client_id = Some("test-client".to_string());
+        config.github_client_secret = Some("test-secret".to_string());
+        config.public_base_url = "https://example.com/".to_string();
+        let pool = connect(&config).await.unwrap();
+        let state = AppState {
+            repositories: RepositoryStore::new(pool.clone()),
+            pool,
+            config,
+            github_client: None,
+        };
+
+        let response = github_start(State(state)).await.unwrap().into_response();
+
+        let location = response.headers().get(LOCATION).unwrap().to_str().unwrap();
+        assert!(location
+            .contains("redirect_uri=https%3A%2F%2Fexample.com%2Fapi%2Fauth%2Fgithub%2Fcallback"));
+        assert!(!location.contains("example.com%2F%2Fapi"));
+    }
+
+    #[tokio::test]
+    async fn github_start_persists_oauth_state() {
+        let mut config = Config::test();
+        config.github_client_id = Some("test-client".to_string());
+        config.github_client_secret = Some("test-secret".to_string());
+        let pool = connect(&config).await.unwrap();
+        let state = AppState {
+            repositories: RepositoryStore::new(pool.clone()),
+            pool: pool.clone(),
+            config,
+            github_client: None,
+        };
+
+        let response = github_start(State(state)).await.unwrap().into_response();
+        let location = response.headers().get(LOCATION).unwrap().to_str().unwrap();
+        assert!(location.contains("state="));
+
+        let oauth_state: String = sqlx::query_scalar("SELECT state FROM oauth_states")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(location.contains(&oauth_state));
+    }
+
+    #[tokio::test]
+    async fn github_start_sets_oauth_state_cookie() {
+        let mut config = Config::test();
+        config.github_client_id = Some("test-client".to_string());
+        config.github_client_secret = Some("test-secret".to_string());
+        let pool = connect(&config).await.unwrap();
+        let state = AppState {
+            repositories: RepositoryStore::new(pool.clone()),
+            pool: pool.clone(),
+            config,
+            github_client: None,
+        };
+
+        let response = github_start(State(state)).await.unwrap().into_response();
+        let oauth_state: String = sqlx::query_scalar("SELECT state FROM oauth_states")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let cookie = response
+            .headers()
+            .get(axum::http::header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+
+        assert!(cookie.contains(&format!("git_reel_oauth_state={oauth_state}")));
+        assert!(cookie.contains("HttpOnly"));
+        assert!(cookie.contains("SameSite=Lax"));
+    }
+
+    #[tokio::test]
+    async fn github_start_keeps_multiple_pending_oauth_states() {
+        let mut config = Config::test();
+        config.github_client_id = Some("test-client".to_string());
+        config.github_client_secret = Some("test-secret".to_string());
+        let pool = connect(&config).await.unwrap();
+        let state = AppState {
+            repositories: RepositoryStore::new(pool.clone()),
+            pool: pool.clone(),
+            config,
+            github_client: None,
+        };
+
+        let first_response = github_start(State(state.clone()))
+            .await
+            .unwrap()
+            .into_response();
+        let first_location = first_response
+            .headers()
+            .get(LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let second_response = github_start(State(state)).await.unwrap().into_response();
+        let second_location = second_response
+            .headers()
+            .get(LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let oauth_states: Vec<String> = sqlx::query_scalar("SELECT state FROM oauth_states")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(oauth_states.len(), 2);
+        assert!(oauth_states
+            .iter()
+            .any(|state| first_location.contains(state)));
+        assert!(oauth_states
+            .iter()
+            .any(|state| second_location.contains(state)));
+    }
+
+    #[tokio::test]
+    async fn github_callback_rejects_mismatched_state_before_exchange() {
+        let mut config = Config::test();
+        config.github_client_id = Some("test-client".to_string());
+        config.github_client_secret = Some("test-secret".to_string());
+        let pool = connect(&config).await.unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO auth_state (id, connected, oauth_state)
+            VALUES (1, 0, 'expected-state')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let state = AppState {
+            repositories: RepositoryStore::new(pool.clone()),
+            pool,
+            config,
+            github_client: None,
+        };
+
+        let response = github_callback(
+            State(state),
+            HeaderMap::new(),
+            Query(GitHubCallbackQuery {
+                code: Some("code-from-github".to_string()),
+                error: None,
+                state: Some("wrong-state".to_string()),
+            }),
+        )
+        .await
+        .unwrap_err()
+        .into_response();
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[tokio::test]
+    async fn github_callback_rejects_matching_state_without_cookie() {
+        let mut config = Config::test();
+        config.github_client_id = Some("test-client".to_string());
+        config.github_client_secret = Some("test-secret".to_string());
+        let pool = connect(&config).await.unwrap();
+        sqlx::query("INSERT INTO oauth_states (state) VALUES ('expected-state')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let state = AppState {
+            repositories: RepositoryStore::new(pool.clone()),
+            pool: pool.clone(),
+            config,
+            github_client: None,
+        };
+
+        let response = github_callback(
+            State(state),
+            HeaderMap::new(),
+            Query(GitHubCallbackQuery {
+                code: Some("code-from-github".to_string()),
+                error: None,
+                state: Some("expected-state".to_string()),
+            }),
+        )
+        .await
+        .unwrap_err()
+        .into_response();
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let state_still_pending: Option<String> =
+            sqlx::query_scalar("SELECT state FROM oauth_states WHERE state = 'expected-state'")
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+        assert_eq!(state_still_pending.as_deref(), Some("expected-state"));
+    }
+
+    #[tokio::test]
+    async fn github_callback_error_deletes_matching_pending_state() {
+        let mut config = Config::test();
+        config.github_client_id = Some("test-client".to_string());
+        config.github_client_secret = Some("test-secret".to_string());
+        let pool = connect(&config).await.unwrap();
+        sqlx::query("INSERT INTO oauth_states (state) VALUES ('cancelled-state')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let state = AppState {
+            repositories: RepositoryStore::new(pool.clone()),
+            pool: pool.clone(),
+            config,
+            github_client: None,
+        };
+
+        let _ = github_callback(
+            State(state),
+            HeaderMap::new(),
+            Query(GitHubCallbackQuery {
+                code: None,
+                error: Some("access_denied".to_string()),
+                state: Some("cancelled-state".to_string()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let state_still_pending: Option<String> =
+            sqlx::query_scalar("SELECT state FROM oauth_states WHERE state = 'cancelled-state'")
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+        assert!(state_still_pending.is_none());
+    }
+
+    #[test]
+    fn github_token_exchange_form_includes_redirect_uri() {
+        let form = github_token_exchange_form(
+            "test-client",
+            "test-secret",
+            "code-from-github",
+            "http://127.0.0.1:4317/api/auth/github/callback",
+        );
+
+        assert!(form.contains(&(
+            "redirect_uri",
+            "http://127.0.0.1:4317/api/auth/github/callback"
+        )));
+    }
+
+    #[test]
+    fn github_oauth_http_timeout_matches_discovery_client() {
+        assert_eq!(
+            github_oauth_http_timeout(),
+            crate::github::GITHUB_HTTP_TIMEOUT
+        );
+    }
+
+    #[tokio::test]
+    async fn dev_connect_clears_existing_access_token() {
+        let config = Config::test();
+        let pool = connect(&config).await.unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO auth_state (id, connected, username, access_token)
+            VALUES (1, 1, 'github-user', 'github-token')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let state = AppState {
+            repositories: RepositoryStore::new(pool.clone()),
+            pool: pool.clone(),
+            config,
+            github_client: None,
+        };
+
+        let _ = dev_connect(
+            State(state),
+            Json(DevConnectRequest {
+                username: "local-dev".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let token: Option<String> =
+            sqlx::query_scalar("SELECT access_token FROM auth_state WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        assert!(token.is_none());
+    }
+
+    #[tokio::test]
+    async fn dev_connect_is_rejected_when_oauth_is_configured() {
+        let mut config = Config::test();
+        config.github_client_id = Some("test-client".to_string());
+        config.github_client_secret = Some("test-secret".to_string());
+        let pool = connect(&config).await.unwrap();
+        let state = AppState {
+            repositories: RepositoryStore::new(pool.clone()),
+            pool: pool.clone(),
+            config,
+            github_client: None,
+        };
+
+        let result = dev_connect(
+            State(state),
+            Json(DevConnectRequest {
+                username: "local-dev".to_string(),
+            }),
+        )
+        .await;
+        let response = match result {
+            Ok(_) => panic!("dev-connect should be rejected when OAuth is configured"),
+            Err(error) => error.into_response(),
+        };
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let connected: Option<i64> =
+            sqlx::query_scalar("SELECT connected FROM auth_state WHERE id = 1")
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+        assert!(connected.is_none());
+    }
 }
