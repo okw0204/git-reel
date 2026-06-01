@@ -65,6 +65,7 @@ fn github_oauth_config(state: &AppState) -> Result<(&str, &str), ApiError> {
 
 async fn github_start(State(state): State<AppState>) -> Result<Response, ApiError> {
     let (client_id, _) = github_oauth_config(&state)?;
+    // state は DB と cookie の両方に置き、callback 時に同じブラウザから戻ったことを確認する。
     let oauth_state = Uuid::new_v4().to_string();
     sqlx::query(
         r#"
@@ -135,6 +136,7 @@ async fn github_callback(
     let access_token = exchange_github_code(client_id, client_secret, &code, &redirect_uri).await?;
     let username = fetch_github_username(&access_token).await?;
 
+    // token はローカル DB にだけ保存し、以後の候補補充でユーザー接続の認証情報として再利用する。
     sqlx::query(
         r#"
         INSERT INTO auth_state (id, connected, username, access_token)
@@ -311,6 +313,7 @@ async fn dev_connect(
     Json(payload): Json<DevConnectRequest>,
 ) -> Result<Json<AuthStateResponse>, ApiError> {
     if github_oauth_configured(&state) {
+        // OAuth 設定済み環境では正規の GitHub 接続を使い、開発用経路の誤使用を避ける。
         return Err(ApiError::OAuth(
             "dev-connect is disabled when GitHub OAuth is configured".to_string(),
         ));

@@ -8,6 +8,7 @@ use std::{sync::Arc, time::Duration as StdDuration};
 use tokio::time::timeout;
 
 pub(crate) const GITHUB_HTTP_TIMEOUT: StdDuration = StdDuration::from_secs(10);
+// README preview は補助情報なので、通常の API 呼び出しより短く待って候補補充を詰まらせない。
 const README_PREVIEW_TIMEOUT: StdDuration = StdDuration::from_secs(2);
 const README_PREVIEW_MAX_CHARS: usize = 1_000;
 
@@ -89,6 +90,7 @@ impl GitHubDiscoveryClient for GitHubClient {
     async fn search_recently_updated_repositories(
         &self,
     ) -> Result<(String, Vec<NewRepository>), GitHubError> {
+        // Search API で候補一覧を取り、README preview は各候補の補助情報として後段で足す。
         let query = recently_updated_search_query();
         let response = self
             .http
@@ -107,6 +109,7 @@ impl GitHubDiscoveryClient for GitHubClient {
 
         let body = response.text().await?;
         let mut repositories = parse_search_response(&body)?;
+        // README 取得は並列化しつつ候補ごとに timeout し、遅いリポジトリだけ preview なしで続行する。
         let readme_requests =
             repositories
                 .iter()

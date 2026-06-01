@@ -21,6 +21,8 @@ pub fn router() -> Router<AppState> {
         .route("/:id/detail", get(detail))
 }
 
+// route 層ではユーザー操作として何を記録するかを決め、履歴やキューの詳細は RepositoryStore に寄せる。
+
 // current はプレビュー用なので、キューを消費せず現在の先頭候補だけを返す。
 async fn current(State(state): State<AppState>) -> Result<Json<ReelResponse>, ApiError> {
     if !auth_connected(&state).await? {

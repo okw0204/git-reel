@@ -106,6 +106,7 @@ impl DiscoveryService {
                 Ok(Some(accepted))
             }
             Err(error) => {
+                // GitHub 側の一時失敗でリール全体を止めず、次の補充元へフォールバックする。
                 tracing::warn!(?error, strategy, "github discovery failed; trying fallback");
                 Ok(None)
             }
@@ -113,11 +114,13 @@ impl DiscoveryService {
     }
 
     pub async fn ensure_candidates(&self) -> Result<(), ApiError> {
+        // 候補が残っている間は補充せず、空になった時だけ優先順に補充元を試す。
         if self.store.next_queued_repository().await?.is_some() {
             return Ok(());
         }
 
         if let Some(token) = self.store.auth_access_token().await? {
+            // OAuth token はユーザー接続に紐づくため、環境変数 token より優先して使う。
             let github_client = (self.oauth_github_client_factory)(token);
             if let Some(accepted) = self
                 .try_github_discovery("recently_updated_oauth_search", github_client)
@@ -129,6 +132,7 @@ impl DiscoveryService {
             }
         }
 
+        // OAuth token がない・採用候補がない場合は、開発環境用の GITHUB_TOKEN client を試す。
         if let Some(github_client) = self.github_client.as_ref() {
             if let Some(accepted) = self
                 .try_github_discovery("recently_updated_live_search", github_client.clone())
@@ -140,6 +144,7 @@ impl DiscoveryService {
             }
         }
 
+        // どの実 GitHub 補充元でも採用できない場合だけ、ローカル開発体験を保つため seed に落とす。
         self.enqueue_seed_candidates().await?;
         Ok(())
     }

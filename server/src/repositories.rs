@@ -15,6 +15,7 @@ impl RepositoryStore {
     }
 
     pub async fn auth_access_token(&self) -> Result<Option<String>, ApiError> {
+        // OAuth 接続済みかつ token が残っている場合だけ、実 GitHub 補充の認証情報として使う。
         let token = sqlx::query_scalar(
             r#"
             SELECT access_token
@@ -188,6 +189,7 @@ impl RepositoryStore {
         candidate_count: i64,
         accepted_count: i64,
     ) -> Result<i64, ApiError> {
+        // discovery_batches は探索結果の監査ログで、実際の表示順は discovery_queue 側で管理する。
         let result = sqlx::query(
             "INSERT INTO discovery_batches (strategy, query, source_api, candidate_count, accepted_count) VALUES (?, ?, 'search', ?, ?)",
         )
@@ -291,6 +293,7 @@ impl RepositoryStore {
     }
 
     pub async fn save_repository(&self, repository_id: i64) -> Result<(), ApiError> {
+        // 保存自体は冪等にしつつ、ユーザーが保存を選んだ事実は履歴イベントとして残す。
         sqlx::query("INSERT OR IGNORE INTO saved_repositories (repository_id) VALUES (?)")
             .bind(repository_id)
             .execute(&self.pool)
@@ -299,6 +302,7 @@ impl RepositoryStore {
     }
 
     pub async fn set_note(&self, repository_id: i64, body: &str) -> Result<(), ApiError> {
+        // メモはリポジトリごとに一つだけ持ち、再保存では本文と更新時刻を上書きする。
         sqlx::query(
             r#"
             INSERT INTO repo_notes (repository_id, body)
@@ -427,6 +431,7 @@ fn normalize_full_name(full_name: &str) -> String {
 }
 
 fn repository_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Repository, ApiError> {
+    // DB 境界の最後で、保存用に JSON 化した topics をアプリ内部の Vec に戻す。
     let topics_json: String = row.get("topics_json");
     Ok(Repository {
         id: row.get("id"),
