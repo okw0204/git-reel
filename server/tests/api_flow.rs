@@ -44,9 +44,41 @@ impl GitHubDiscoveryClient for FakeGitHubClient {
     ) -> Result<(String, Vec<NewRepository>), GitHubError> {
         match &self.result {
             Ok((query, repositories)) => Ok((query.clone(), repositories.clone())),
-            Err(_) => Err(GitHubError::HttpStatus(StatusCode::FORBIDDEN)),
+            Err(error) => Err(error.clone()),
         }
     }
+}
+
+#[tokio::test]
+async fn fake_github_discovery_client_returns_configured_http_status_error() {
+    let client = FakeGitHubClient {
+        result: Err(GitHubError::HttpStatus(StatusCode::UNAUTHORIZED)),
+    };
+
+    let error = client
+        .search_recently_updated_repositories()
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        GitHubError::HttpStatus(StatusCode::UNAUTHORIZED)
+    ));
+}
+
+#[tokio::test]
+async fn fake_github_discovery_client_returns_configured_json_error() {
+    let configured = serde_json::from_str::<Value>("not json").unwrap_err();
+    let client = FakeGitHubClient {
+        result: Err(GitHubError::Json(Arc::new(configured))),
+    };
+
+    let error = client
+        .search_recently_updated_repositories()
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, GitHubError::Json(_)));
 }
 
 #[tokio::test]
@@ -117,6 +149,62 @@ async fn auth_state_starts_disconnected_and_dev_connect_sets_user() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn store_returns_connected_auth_access_token() {
+    let pool = connect(&Config::test()).await.unwrap();
+    let store = RepositoryStore::new(pool.clone());
+
+    sqlx::query(
+        r#"
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 1, 'octocat', 'gho_oauth_token')
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let token = store.auth_access_token().await.unwrap();
+
+    assert_eq!(token.as_deref(), Some("gho_oauth_token"));
+}
+
+#[tokio::test]
+async fn store_does_not_return_auth_access_token_when_disconnected_or_missing() {
+    let pool = connect(&Config::test()).await.unwrap();
+    let store = RepositoryStore::new(pool.clone());
+
+    let missing = store.auth_access_token().await.unwrap();
+    assert_eq!(missing, None);
+
+    sqlx::query(
+        r#"
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 0, 'octocat', 'gho_disconnected_token')
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let disconnected = store.auth_access_token().await.unwrap();
+    assert_eq!(disconnected, None);
+
+    sqlx::query(
+        r#"
+        UPDATE auth_state
+        SET connected = 1, access_token = NULL
+        WHERE id = 1
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let tokenless = store.auth_access_token().await.unwrap();
+    assert_eq!(tokenless, None);
 }
 
 #[tokio::test]
@@ -246,6 +334,100 @@ async fn discovery_uses_github_candidates_when_queue_is_empty() {
 
     let next = store.next_queued_repository().await.unwrap().unwrap();
     assert_eq!(next.full_name, "acme/live");
+}
+
+#[tokio::test]
+async fn discovery_prefers_oauth_token_client_when_auth_token_exists() {
+    let pool = connect(&Config::test()).await.unwrap();
+    let store = RepositoryStore::new(pool.clone());
+    sqlx::query(
+        r#"
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 1, 'octocat', 'gho_oauth_token')
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let fallback_client = Arc::new(FakeGitHubClient {
+        result: Ok((
+            "fallback query".to_string(),
+            vec![sample_repo("acme/fallback", 402)],
+        )),
+    });
+    let service = DiscoveryService::new(store.clone())
+        .with_github_client(Some(fallback_client))
+        .with_oauth_github_client_factory(Arc::new(|token| {
+            assert_eq!(token, "gho_oauth_token");
+            Arc::new(FakeGitHubClient {
+                result: Ok((
+                    "oauth query".to_string(),
+                    vec![sample_repo("acme/oauth", 403)],
+                )),
+            })
+        }));
+
+    service.ensure_candidates().await.unwrap();
+
+    let next = store.next_queued_repository().await.unwrap().unwrap();
+    assert_eq!(next.full_name, "acme/oauth");
+}
+
+#[tokio::test]
+async fn discovery_falls_back_to_github_token_client_when_oauth_client_fails() {
+    let pool = connect(&Config::test()).await.unwrap();
+    let store = RepositoryStore::new(pool.clone());
+    sqlx::query(
+        r#"
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 1, 'octocat', 'gho_expired_token')
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let fallback_client = Arc::new(FakeGitHubClient {
+        result: Ok((
+            "fallback query".to_string(),
+            vec![sample_repo("acme/fallback", 404)],
+        )),
+    });
+    let service = DiscoveryService::new(store.clone())
+        .with_github_client(Some(fallback_client))
+        .with_oauth_github_client_factory(Arc::new(|_| {
+            Arc::new(FakeGitHubClient {
+                result: Err(GitHubError::HttpStatus(StatusCode::UNAUTHORIZED)),
+            })
+        }));
+
+    service.ensure_candidates().await.unwrap();
+
+    let next = store.next_queued_repository().await.unwrap().unwrap();
+    assert_eq!(next.full_name, "acme/fallback");
+}
+
+#[tokio::test]
+async fn discovery_uses_github_token_client_when_oauth_token_is_missing() {
+    let pool = connect(&Config::test()).await.unwrap();
+    let store = RepositoryStore::new(pool);
+    let fallback_client = Arc::new(FakeGitHubClient {
+        result: Ok((
+            "fallback query".to_string(),
+            vec![sample_repo("acme/fallback-only", 405)],
+        )),
+    });
+    let service = DiscoveryService::new(store.clone())
+        .with_github_client(Some(fallback_client))
+        .with_oauth_github_client_factory(Arc::new(|_| {
+            panic!("OAuth client factory should not be called without a saved token")
+        }));
+
+    service.ensure_candidates().await.unwrap();
+
+    let next = store.next_queued_repository().await.unwrap().unwrap();
+    assert_eq!(next.full_name, "acme/fallback-only");
 }
 
 #[tokio::test]

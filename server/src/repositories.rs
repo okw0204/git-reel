@@ -14,6 +14,22 @@ impl RepositoryStore {
         Self { pool }
     }
 
+    pub async fn auth_access_token(&self) -> Result<Option<String>, ApiError> {
+        let token = sqlx::query_scalar(
+            r#"
+            SELECT access_token
+            FROM auth_state
+            WHERE id = 1
+              AND connected = 1
+              AND access_token IS NOT NULL
+            "#,
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(token)
+    }
+
     pub async fn upsert_repository(&self, repo: NewRepository) -> Result<Repository, ApiError> {
         // GitHub id が変わらないケースを優先しつつ、表示名の表記ゆれにも備えて正規化名を保持する。
         let normalized = normalize_full_name(&repo.full_name);

@@ -15,6 +15,7 @@ fn converts_search_response_to_new_repository() {
         repositories[0].topics,
         vec!["github".to_string(), "discovery".to_string()]
     );
+    assert_eq!(repositories[0].readme_preview, None);
 }
 
 #[test]
@@ -28,8 +29,34 @@ fn extracts_graphql_readme_preview() {
 }
 
 #[test]
+fn truncates_graphql_readme_preview() {
+    let readme = "a".repeat(1_001);
+    let fixture = serde_json::json!({
+        "data": {
+            "repository": {
+                "object": {
+                    "text": readme,
+                },
+            },
+        },
+    })
+    .to_string();
+
+    let preview = parse_graphql_readme_preview(&fixture).unwrap().unwrap();
+
+    assert_eq!(preview.len(), 1_000);
+}
+
+#[test]
 fn returns_none_for_nullable_graphql_repository() {
     let fixture = r#"{"data":{"repository":null}}"#;
+    let preview = parse_graphql_readme_preview(fixture).unwrap();
+    assert_eq!(preview, None);
+}
+
+#[test]
+fn returns_none_for_nullable_graphql_readme_object() {
+    let fixture = r#"{"data":{"repository":{"object":null}}}"#;
     let preview = parse_graphql_readme_preview(fixture).unwrap();
     assert_eq!(preview, None);
 }

@@ -1,20 +1,36 @@
 use crate::models::NewRepository;
 use async_trait::async_trait;
 use chrono::{Duration, NaiveDate, Utc};
+use futures_util::future::join_all;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
-use serde::Deserialize;
-use std::time::Duration as StdDuration;
+use serde::{Deserialize, Serialize};
+use std::{sync::Arc, time::Duration as StdDuration};
+use tokio::time::timeout;
 
 pub(crate) const GITHUB_HTTP_TIMEOUT: StdDuration = StdDuration::from_secs(10);
+const README_PREVIEW_TIMEOUT: StdDuration = StdDuration::from_secs(2);
+const README_PREVIEW_MAX_CHARS: usize = 1_000;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum GitHubError {
     #[error("github http error: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(Arc<reqwest::Error>),
     #[error("github http status: {0}")]
     HttpStatus(reqwest::StatusCode),
     #[error("json error: {0}")]
-    Json(#[from] serde_json::Error),
+    Json(Arc<serde_json::Error>),
+}
+
+impl From<reqwest::Error> for GitHubError {
+    fn from(error: reqwest::Error) -> Self {
+        Self::Http(Arc::new(error))
+    }
+}
+
+impl From<serde_json::Error> for GitHubError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::Json(Arc::new(error))
+    }
 }
 
 #[async_trait]
@@ -43,6 +59,29 @@ impl GitHubClient {
     pub fn token(&self) -> &str {
         &self.token
     }
+
+    async fn readme_preview(&self, owner: &str, name: &str) -> Result<Option<String>, GitHubError> {
+        let response = self
+            .http
+            .post("https://api.github.com/graphql")
+            .header(USER_AGENT, "git-reel")
+            .header(ACCEPT, "application/vnd.github+json")
+            .header(AUTHORIZATION, format!("Bearer {}", self.token))
+            .json(&GraphQlRequest {
+                query: README_PREVIEW_QUERY,
+                variables: GraphQlReadmeVariables { owner, name },
+            })
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(GitHubError::HttpStatus(status));
+        }
+
+        let body = response.text().await?;
+        parse_graphql_readme_preview(&body)
+    }
 }
 
 #[async_trait]
@@ -67,7 +106,40 @@ impl GitHubDiscoveryClient for GitHubClient {
         }
 
         let body = response.text().await?;
-        let repositories = parse_search_response(&body)?;
+        let mut repositories = parse_search_response(&body)?;
+        let readme_requests =
+            repositories
+                .iter()
+                .map(|repository| {
+                    let owner = repository.owner.clone();
+                    let name = repository.name.clone();
+                    async move {
+                        timeout(README_PREVIEW_TIMEOUT, self.readme_preview(&owner, &name)).await
+                    }
+                })
+                .collect::<Vec<_>>();
+
+        for (repository, preview) in repositories.iter_mut().zip(join_all(readme_requests).await) {
+            match preview {
+                Ok(Ok(preview)) => {
+                    repository.readme_preview = preview;
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(
+                        ?error,
+                        repository = %repository.full_name,
+                        "github readme preview failed; keeping repository without preview"
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        ?error,
+                        repository = %repository.full_name,
+                        "github readme preview timed out; keeping repository without preview"
+                    );
+                }
+            }
+        }
         Ok((query, repositories))
     }
 }
@@ -146,6 +218,30 @@ struct ReadmeObject {
     text: String,
 }
 
+#[derive(Serialize)]
+struct GraphQlRequest<'a> {
+    query: &'a str,
+    variables: GraphQlReadmeVariables<'a>,
+}
+
+#[derive(Serialize)]
+struct GraphQlReadmeVariables<'a> {
+    owner: &'a str,
+    name: &'a str,
+}
+
+const README_PREVIEW_QUERY: &str = r#"
+query RepositoryReadme($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    object(expression: "HEAD:README.md") {
+      ... on Blob {
+        text
+      }
+    }
+  }
+}
+"#;
+
 pub fn build_recently_updated_search_query(today: NaiveDate) -> String {
     let pushed_after = today - Duration::days(90);
     format!(
@@ -185,7 +281,7 @@ pub fn parse_graphql_readme_preview(body: &str) -> Result<Option<String>, GitHub
         .data
         .repository
         .and_then(|repository| repository.object)
-        .map(|object| object.text))
+        .map(|object| object.text.chars().take(README_PREVIEW_MAX_CHARS).collect()))
 }
 
 pub fn parse_oauth_token_response(body: &str) -> Result<String, GitHubError> {
@@ -200,12 +296,18 @@ pub fn parse_user_response(body: &str) -> Result<String, GitHubError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{recently_updated_search_params, GITHUB_HTTP_TIMEOUT};
+    use super::{recently_updated_search_params, GITHUB_HTTP_TIMEOUT, README_PREVIEW_TIMEOUT};
     use std::time::Duration;
 
     #[test]
     fn github_http_timeout_is_explicit() {
         assert_eq!(GITHUB_HTTP_TIMEOUT, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn readme_preview_timeout_is_shorter_than_github_http_timeout() {
+        assert_eq!(README_PREVIEW_TIMEOUT, Duration::from_secs(2));
+        assert!(README_PREVIEW_TIMEOUT < GITHUB_HTTP_TIMEOUT);
     }
 
     #[test]
