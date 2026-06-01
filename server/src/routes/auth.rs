@@ -295,15 +295,22 @@ fn github_oauth_http_client() -> Result<reqwest::Client, ApiError> {
 }
 
 async fn auth_state(State(state): State<AppState>) -> Result<Json<AuthStateResponse>, ApiError> {
-    let row: Option<(i64, Option<String>)> =
-        sqlx::query_as("SELECT connected, username FROM auth_state WHERE id = 1")
+    let row: Option<(i64, Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT connected, username, access_token FROM auth_state WHERE id = 1")
             .fetch_optional(&state.pool)
             .await?;
+    let oauth_configured = github_oauth_configured(&state);
+    let connected = row
+        .as_ref()
+        .map(|(connected, _, access_token)| {
+            *connected == 1 && (!oauth_configured || access_token.is_some())
+        })
+        .unwrap_or(false);
     Ok(Json(AuthStateResponse {
-        connected: row.as_ref().map(|r| r.0 == 1).unwrap_or(false),
-        username: row.and_then(|r| r.1),
-        oauth_configured: github_oauth_configured(&state),
-        oauth_start_url: github_oauth_configured(&state).then(|| github_start_url(&state)),
+        connected,
+        username: connected.then(|| row.and_then(|r| r.1)).flatten(),
+        oauth_configured,
+        oauth_start_url: oauth_configured.then(|| github_start_url(&state)),
     }))
 }
 
@@ -394,6 +401,39 @@ mod tests {
 
         let Json(response) = auth_state(State(state)).await.unwrap();
 
+        assert_eq!(
+            response.oauth_start_url.as_deref(),
+            Some("http://127.0.0.1:4317/api/auth/github/start")
+        );
+    }
+
+    #[tokio::test]
+    async fn auth_state_ignores_tokenless_dev_connection_when_oauth_is_configured() {
+        let mut config = Config::test();
+        config.github_client_id = Some("test-client".to_string());
+        config.github_client_secret = Some("test-secret".to_string());
+        let pool = connect(&config).await.unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO auth_state (id, connected, username, access_token)
+            VALUES (1, 1, 'local-dev', NULL)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let state = AppState {
+            repositories: RepositoryStore::new(pool.clone()),
+            pool,
+            config,
+            github_client: None,
+        };
+
+        let Json(response) = auth_state(State(state)).await.unwrap();
+
+        assert!(!response.connected);
+        assert!(response.username.is_none());
+        assert!(response.oauth_configured);
         assert_eq!(
             response.oauth_start_url.as_deref(),
             Some("http://127.0.0.1:4317/api/auth/github/start")
