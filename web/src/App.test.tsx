@@ -64,6 +64,20 @@ describe("App", () => {
     expect(window.location.href).toBe("http://127.0.0.1:4317/api/auth/github/start");
   });
 
+  test("認証状態の読み込み中は接続ボタンを表示しない", () => {
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/auth/state") return new Promise<Response>(() => undefined);
+      if (path === "/api/reel/current") return Promise.resolve(Response.json({ repository: null, empty_reason: "auth_required" }));
+      return Promise.resolve(Response.json({ ok: true }));
+    }));
+
+    render(<App />);
+
+    expect(screen.queryByRole("button", { name: "開発用に接続" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "GitHubに接続" })).not.toBeInTheDocument();
+  });
+
   test("OAuth 未設定のローカル環境では開発用接続でリールを表示できる", async () => {
     render(<App />);
 
