@@ -2,7 +2,7 @@ use crate::models::NewRepository;
 use async_trait::async_trait;
 use chrono::{Duration, NaiveDate, Utc};
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Duration as StdDuration};
 
 pub(crate) const GITHUB_HTTP_TIMEOUT: StdDuration = StdDuration::from_secs(10);
@@ -55,6 +55,29 @@ impl GitHubClient {
     pub fn token(&self) -> &str {
         &self.token
     }
+
+    async fn readme_preview(&self, owner: &str, name: &str) -> Result<Option<String>, GitHubError> {
+        let response = self
+            .http
+            .post("https://api.github.com/graphql")
+            .header(USER_AGENT, "git-reel")
+            .header(ACCEPT, "application/vnd.github+json")
+            .header(AUTHORIZATION, format!("Bearer {}", self.token))
+            .json(&GraphQlRequest {
+                query: README_PREVIEW_QUERY,
+                variables: GraphQlReadmeVariables { owner, name },
+            })
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(GitHubError::HttpStatus(status));
+        }
+
+        let body = response.text().await?;
+        parse_graphql_readme_preview(&body)
+    }
 }
 
 #[async_trait]
@@ -79,7 +102,21 @@ impl GitHubDiscoveryClient for GitHubClient {
         }
 
         let body = response.text().await?;
-        let repositories = parse_search_response(&body)?;
+        let mut repositories = parse_search_response(&body)?;
+        for repository in repositories.iter_mut() {
+            match self.readme_preview(&repository.owner, &repository.name).await {
+                Ok(preview) => {
+                    repository.readme_preview = preview;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        ?error,
+                        repository = %repository.full_name,
+                        "github readme preview failed; keeping repository without preview"
+                    );
+                }
+            }
+        }
         Ok((query, repositories))
     }
 }
@@ -157,6 +194,30 @@ struct GraphQlRepository {
 struct ReadmeObject {
     text: String,
 }
+
+#[derive(Serialize)]
+struct GraphQlRequest<'a> {
+    query: &'a str,
+    variables: GraphQlReadmeVariables<'a>,
+}
+
+#[derive(Serialize)]
+struct GraphQlReadmeVariables<'a> {
+    owner: &'a str,
+    name: &'a str,
+}
+
+const README_PREVIEW_QUERY: &str = r#"
+query RepositoryReadme($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    object(expression: "HEAD:README.md") {
+      ... on Blob {
+        text
+      }
+    }
+  }
+}
+"#;
 
 pub fn build_recently_updated_search_query(today: NaiveDate) -> String {
     let pushed_after = today - Duration::days(90);

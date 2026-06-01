@@ -15,6 +15,7 @@ fn converts_search_response_to_new_repository() {
         repositories[0].topics,
         vec!["github".to_string(), "discovery".to_string()]
     );
+    assert_eq!(repositories[0].readme_preview, None);
 }
 
 #[test]
@@ -30,6 +31,13 @@ fn extracts_graphql_readme_preview() {
 #[test]
 fn returns_none_for_nullable_graphql_repository() {
     let fixture = r#"{"data":{"repository":null}}"#;
+    let preview = parse_graphql_readme_preview(fixture).unwrap();
+    assert_eq!(preview, None);
+}
+
+#[test]
+fn returns_none_for_nullable_graphql_readme_object() {
+    let fixture = r#"{"data":{"repository":{"object":null}}}"#;
     let preview = parse_graphql_readme_preview(fixture).unwrap();
     assert_eq!(preview, None);
 }
