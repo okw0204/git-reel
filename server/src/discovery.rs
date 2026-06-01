@@ -31,9 +31,7 @@ impl DiscoveryService {
         Self {
             store,
             github_client: None,
-            oauth_github_client_factory: Arc::new(|token| {
-                Arc::new(GitHubClient::new_without_readme_preview(token))
-            }),
+            oauth_github_client_factory: Arc::new(|token| Arc::new(GitHubClient::new(token))),
         }
     }
 
