@@ -1,6 +1,7 @@
 use crate::models::NewRepository;
 use async_trait::async_trait;
 use chrono::{Duration, NaiveDate, Utc};
+use futures_util::future::join_all;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Duration as StdDuration};
@@ -103,8 +104,17 @@ impl GitHubDiscoveryClient for GitHubClient {
 
         let body = response.text().await?;
         let mut repositories = parse_search_response(&body)?;
-        for repository in repositories.iter_mut() {
-            match self.readme_preview(&repository.owner, &repository.name).await {
+        let readme_requests = repositories
+            .iter()
+            .map(|repository| {
+                let owner = repository.owner.clone();
+                let name = repository.name.clone();
+                async move { self.readme_preview(&owner, &name).await }
+            })
+            .collect::<Vec<_>>();
+
+        for (repository, preview) in repositories.iter_mut().zip(join_all(readme_requests).await) {
+            match preview {
                 Ok(preview) => {
                     repository.readme_preview = preview;
                 }
