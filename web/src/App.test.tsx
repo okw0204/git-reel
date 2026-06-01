@@ -58,6 +58,7 @@ describe("App", () => {
     render(<App />);
 
     await screen.findByText("GitHubに接続するとリールを開始できます");
+    expect(screen.getByText("GitHub OAuth で接続すると、保存済み OAuth token を使って実リポジトリ候補を取得します。")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "GitHubに接続" }));
 
     expect(window.location.href).toBe("http://127.0.0.1:4317/api/auth/github/start");
@@ -67,6 +68,7 @@ describe("App", () => {
     render(<App />);
 
     await screen.findByText("GitHubに接続するとリールを開始できます");
+    expect(screen.getByText("OAuth 未設定のローカル環境では開発用接続でシード候補を使います。")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "開発用に接続" }));
 
     expect(await screen.findByRole("heading", { name: "okw0204/git-reel" })).toBeInTheDocument();

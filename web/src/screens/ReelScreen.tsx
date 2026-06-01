@@ -112,7 +112,7 @@ export function ReelScreen({ auth, onAuthChange }: ReelScreenProps) {
         <h1>GitHubに接続するとリールを開始できます</h1>
         <p>
           {auth.oauth_configured
-            ? "GitHub OAuth で接続後も、リポジトリ候補はローカルのシード候補を使います。"
+            ? "GitHub OAuth で接続すると、保存済み OAuth token を使って実リポジトリ候補を取得します。"
             : "OAuth 未設定のローカル環境では開発用接続でシード候補を使います。"}
         </p>
         <button className="primary-button" onClick={connect} type="button">
