@@ -29,6 +29,25 @@ fn extracts_graphql_readme_preview() {
 }
 
 #[test]
+fn truncates_graphql_readme_preview() {
+    let readme = "a".repeat(1_001);
+    let fixture = serde_json::json!({
+        "data": {
+            "repository": {
+                "object": {
+                    "text": readme,
+                },
+            },
+        },
+    })
+    .to_string();
+
+    let preview = parse_graphql_readme_preview(&fixture).unwrap().unwrap();
+
+    assert_eq!(preview.len(), 1_000);
+}
+
+#[test]
 fn returns_none_for_nullable_graphql_repository() {
     let fixture = r#"{"data":{"repository":null}}"#;
     let preview = parse_graphql_readme_preview(fixture).unwrap();

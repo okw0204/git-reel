@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Duration as StdDuration};
 
 pub(crate) const GITHUB_HTTP_TIMEOUT: StdDuration = StdDuration::from_secs(10);
+const README_PREVIEW_MAX_CHARS: usize = 1_000;
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum GitHubError {
@@ -268,7 +269,7 @@ pub fn parse_graphql_readme_preview(body: &str) -> Result<Option<String>, GitHub
         .data
         .repository
         .and_then(|repository| repository.object)
-        .map(|object| object.text))
+        .map(|object| object.text.chars().take(README_PREVIEW_MAX_CHARS).collect()))
 }
 
 pub fn parse_oauth_token_response(body: &str) -> Result<String, GitHubError> {
