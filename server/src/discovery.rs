@@ -1,13 +1,18 @@
 use crate::{
-    error::ApiError, github::GitHubDiscoveryClient, models::NewRepository,
+    error::ApiError,
+    github::{GitHubClient, GitHubDiscoveryClient},
+    models::NewRepository,
     repositories::RepositoryStore,
 };
 use std::{collections::HashSet, sync::Arc};
+
+pub type GitHubClientFactory = Arc<dyn Fn(String) -> Arc<dyn GitHubDiscoveryClient> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct DiscoveryService {
     store: RepositoryStore,
     github_client: Option<Arc<dyn GitHubDiscoveryClient>>,
+    oauth_github_client_factory: GitHubClientFactory,
 }
 
 #[derive(Clone)]
@@ -26,6 +31,7 @@ impl DiscoveryService {
         Self {
             store,
             github_client: None,
+            oauth_github_client_factory: Arc::new(|token| Arc::new(GitHubClient::new(token))),
         }
     }
 
@@ -34,6 +40,11 @@ impl DiscoveryService {
         github_client: Option<Arc<dyn GitHubDiscoveryClient>>,
     ) -> Self {
         self.github_client = github_client;
+        self
+    }
+
+    pub fn with_oauth_github_client_factory(mut self, factory: GitHubClientFactory) -> Self {
+        self.oauth_github_client_factory = factory;
         self
     }
 
@@ -78,30 +89,53 @@ impl DiscoveryService {
         Ok(accepted_ids.len())
     }
 
+    async fn try_github_discovery(
+        &self,
+        strategy: &str,
+        github_client: Arc<dyn GitHubDiscoveryClient>,
+    ) -> Result<Option<usize>, ApiError> {
+        match github_client.search_recently_updated_repositories().await {
+            Ok((query, repositories)) => {
+                let candidates = repositories
+                    .into_iter()
+                    .map(DiscoveryCandidate::from_new_repository)
+                    .collect();
+                let accepted = self
+                    .enqueue_candidates(strategy, &query, candidates)
+                    .await?;
+                Ok(Some(accepted))
+            }
+            Err(error) => {
+                tracing::warn!(?error, strategy, "github discovery failed; trying fallback");
+                Ok(None)
+            }
+        }
+    }
+
     pub async fn ensure_candidates(&self) -> Result<(), ApiError> {
         if self.store.next_queued_repository().await?.is_some() {
             return Ok(());
         }
 
-        if let Some(github_client) = self.github_client.as_ref() {
-            match github_client.search_recently_updated_repositories().await {
-                Ok((query, repositories)) => {
-                    let candidates = repositories
-                        .into_iter()
-                        .map(DiscoveryCandidate::from_new_repository)
-                        .collect();
-                    let accepted = self
-                        .enqueue_candidates("recently_updated_live_search", &query, candidates)
-                        .await?;
-                    if accepted > 0 {
-                        return Ok(());
-                    }
+        if let Some(token) = self.store.auth_access_token().await? {
+            let github_client = (self.oauth_github_client_factory)(token);
+            if let Some(accepted) = self
+                .try_github_discovery("recently_updated_oauth_search", github_client)
+                .await?
+            {
+                if accepted > 0 {
+                    return Ok(());
                 }
-                Err(error) => {
-                    tracing::warn!(
-                        ?error,
-                        "github discovery failed; falling back to seed repositories"
-                    );
+            }
+        }
+
+        if let Some(github_client) = self.github_client.as_ref() {
+            if let Some(accepted) = self
+                .try_github_discovery("recently_updated_live_search", github_client.clone())
+                .await?
+            {
+                if accepted > 0 {
+                    return Ok(());
                 }
             }
         }

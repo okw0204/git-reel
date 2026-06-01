@@ -305,6 +305,100 @@ async fn discovery_uses_github_candidates_when_queue_is_empty() {
 }
 
 #[tokio::test]
+async fn discovery_prefers_oauth_token_client_when_auth_token_exists() {
+    let pool = connect(&Config::test()).await.unwrap();
+    let store = RepositoryStore::new(pool.clone());
+    sqlx::query(
+        r#"
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 1, 'octocat', 'gho_oauth_token')
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let fallback_client = Arc::new(FakeGitHubClient {
+        result: Ok((
+            "fallback query".to_string(),
+            vec![sample_repo("acme/fallback", 402)],
+        )),
+    });
+    let service = DiscoveryService::new(store.clone())
+        .with_github_client(Some(fallback_client))
+        .with_oauth_github_client_factory(Arc::new(|token| {
+            assert_eq!(token, "gho_oauth_token");
+            Arc::new(FakeGitHubClient {
+                result: Ok((
+                    "oauth query".to_string(),
+                    vec![sample_repo("acme/oauth", 403)],
+                )),
+            })
+        }));
+
+    service.ensure_candidates().await.unwrap();
+
+    let next = store.next_queued_repository().await.unwrap().unwrap();
+    assert_eq!(next.full_name, "acme/oauth");
+}
+
+#[tokio::test]
+async fn discovery_falls_back_to_github_token_client_when_oauth_client_fails() {
+    let pool = connect(&Config::test()).await.unwrap();
+    let store = RepositoryStore::new(pool.clone());
+    sqlx::query(
+        r#"
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 1, 'octocat', 'gho_expired_token')
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let fallback_client = Arc::new(FakeGitHubClient {
+        result: Ok((
+            "fallback query".to_string(),
+            vec![sample_repo("acme/fallback", 404)],
+        )),
+    });
+    let service = DiscoveryService::new(store.clone())
+        .with_github_client(Some(fallback_client))
+        .with_oauth_github_client_factory(Arc::new(|_| {
+            Arc::new(FakeGitHubClient {
+                result: Err(GitHubError::HttpStatus(StatusCode::UNAUTHORIZED)),
+            })
+        }));
+
+    service.ensure_candidates().await.unwrap();
+
+    let next = store.next_queued_repository().await.unwrap().unwrap();
+    assert_eq!(next.full_name, "acme/fallback");
+}
+
+#[tokio::test]
+async fn discovery_uses_github_token_client_when_oauth_token_is_missing() {
+    let pool = connect(&Config::test()).await.unwrap();
+    let store = RepositoryStore::new(pool);
+    let fallback_client = Arc::new(FakeGitHubClient {
+        result: Ok((
+            "fallback query".to_string(),
+            vec![sample_repo("acme/fallback-only", 405)],
+        )),
+    });
+    let service = DiscoveryService::new(store.clone())
+        .with_github_client(Some(fallback_client))
+        .with_oauth_github_client_factory(Arc::new(|_| {
+            panic!("OAuth client factory should not be called without a saved token")
+        }));
+
+    service.ensure_candidates().await.unwrap();
+
+    let next = store.next_queued_repository().await.unwrap().unwrap();
+    assert_eq!(next.full_name, "acme/fallback-only");
+}
+
+#[tokio::test]
 async fn discovery_falls_back_to_seed_without_github_client() {
     let pool = connect(&Config::test()).await.unwrap();
     let store = RepositoryStore::new(pool);
