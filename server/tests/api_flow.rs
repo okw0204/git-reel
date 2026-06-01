@@ -120,6 +120,62 @@ async fn auth_state_starts_disconnected_and_dev_connect_sets_user() {
 }
 
 #[tokio::test]
+async fn store_returns_connected_auth_access_token() {
+    let pool = connect(&Config::test()).await.unwrap();
+    let store = RepositoryStore::new(pool.clone());
+
+    sqlx::query(
+        r#"
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 1, 'octocat', 'gho_oauth_token')
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let token = store.auth_access_token().await.unwrap();
+
+    assert_eq!(token.as_deref(), Some("gho_oauth_token"));
+}
+
+#[tokio::test]
+async fn store_does_not_return_auth_access_token_when_disconnected_or_missing() {
+    let pool = connect(&Config::test()).await.unwrap();
+    let store = RepositoryStore::new(pool.clone());
+
+    let missing = store.auth_access_token().await.unwrap();
+    assert_eq!(missing, None);
+
+    sqlx::query(
+        r#"
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 0, 'octocat', 'gho_disconnected_token')
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let disconnected = store.auth_access_token().await.unwrap();
+    assert_eq!(disconnected, None);
+
+    sqlx::query(
+        r#"
+        UPDATE auth_state
+        SET connected = 1, access_token = NULL
+        WHERE id = 1
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let tokenless = store.auth_access_token().await.unwrap();
+    assert_eq!(tokenless, None);
+}
+
+#[tokio::test]
 async fn github_oauth_start_requires_oauth_config() {
     let app = git_reel_server::build_test_app().await.unwrap();
 
