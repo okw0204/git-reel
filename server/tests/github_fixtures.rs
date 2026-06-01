@@ -91,4 +91,15 @@ fn creates_github_client_from_token() {
     let client = git_reel_server::github::GitHubClient::new("secret-token".to_string());
 
     assert_eq!(client.token(), "secret-token");
+    assert!(client.readme_preview_enabled());
+}
+
+#[test]
+fn creates_github_client_without_readme_preview() {
+    let client = git_reel_server::github::GitHubClient::new_without_readme_preview(
+        "oauth-token".to_string(),
+    );
+
+    assert_eq!(client.token(), "oauth-token");
+    assert!(!client.readme_preview_enabled());
 }

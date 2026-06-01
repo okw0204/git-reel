@@ -41,21 +41,35 @@ pub trait GitHubDiscoveryClient: Send + Sync {
 pub struct GitHubClient {
     token: String,
     http: reqwest::Client,
+    readme_preview_enabled: bool,
 }
 
 impl GitHubClient {
     pub fn new(token: String) -> Self {
+        Self::with_readme_preview(token, true)
+    }
+
+    pub fn new_without_readme_preview(token: String) -> Self {
+        Self::with_readme_preview(token, false)
+    }
+
+    fn with_readme_preview(token: String, readme_preview_enabled: bool) -> Self {
         Self {
             token,
             http: reqwest::Client::builder()
                 .timeout(GITHUB_HTTP_TIMEOUT)
                 .build()
                 .expect("github HTTP client configuration should be valid"),
+            readme_preview_enabled,
         }
     }
 
     pub fn token(&self) -> &str {
         &self.token
+    }
+
+    pub fn readme_preview_enabled(&self) -> bool {
+        self.readme_preview_enabled
     }
 
     async fn readme_preview(&self, owner: &str, name: &str) -> Result<Option<String>, GitHubError> {
@@ -105,6 +119,10 @@ impl GitHubDiscoveryClient for GitHubClient {
 
         let body = response.text().await?;
         let mut repositories = parse_search_response(&body)?;
+        if !self.readme_preview_enabled {
+            return Ok((query, repositories));
+        }
+
         let readme_requests = repositories
             .iter()
             .map(|repository| {
