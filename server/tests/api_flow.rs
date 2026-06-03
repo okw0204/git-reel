@@ -34,7 +34,24 @@ fn sample_repo(full_name: &str, github_id: i64) -> NewRepository {
 }
 
 struct FakeGitHubClient {
-    result: Result<(String, Vec<NewRepository>), GitHubError>,
+    recently_updated_result: Result<(String, Vec<NewRepository>), GitHubError>,
+    starred_result: Result<(String, Vec<NewRepository>), GitHubError>,
+}
+
+impl FakeGitHubClient {
+    fn recently_updated(result: Result<(String, Vec<NewRepository>), GitHubError>) -> Self {
+        Self {
+            recently_updated_result: result,
+            starred_result: Ok(("unused starred query".to_string(), Vec::new())),
+        }
+    }
+
+    fn starred(result: Result<(String, Vec<NewRepository>), GitHubError>) -> Self {
+        Self {
+            recently_updated_result: Err(GitHubError::HttpStatus(StatusCode::IM_A_TEAPOT)),
+            starred_result: result,
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -42,7 +59,16 @@ impl GitHubDiscoveryClient for FakeGitHubClient {
     async fn search_recently_updated_repositories(
         &self,
     ) -> Result<(String, Vec<NewRepository>), GitHubError> {
-        match &self.result {
+        match &self.recently_updated_result {
+            Ok((query, repositories)) => Ok((query.clone(), repositories.clone())),
+            Err(error) => Err(error.clone()),
+        }
+    }
+
+    async fn search_starred_repositories(
+        &self,
+    ) -> Result<(String, Vec<NewRepository>), GitHubError> {
+        match &self.starred_result {
             Ok((query, repositories)) => Ok((query.clone(), repositories.clone())),
             Err(error) => Err(error.clone()),
         }
@@ -51,14 +77,9 @@ impl GitHubDiscoveryClient for FakeGitHubClient {
 
 #[tokio::test]
 async fn fake_github_discovery_client_returns_configured_http_status_error() {
-    let client = FakeGitHubClient {
-        result: Err(GitHubError::HttpStatus(StatusCode::UNAUTHORIZED)),
-    };
+    let client = FakeGitHubClient::starred(Err(GitHubError::HttpStatus(StatusCode::UNAUTHORIZED)));
 
-    let error = client
-        .search_recently_updated_repositories()
-        .await
-        .unwrap_err();
+    let error = client.search_starred_repositories().await.unwrap_err();
 
     assert!(matches!(
         error,
@@ -69,9 +90,7 @@ async fn fake_github_discovery_client_returns_configured_http_status_error() {
 #[tokio::test]
 async fn fake_github_discovery_client_returns_configured_json_error() {
     let configured = serde_json::from_str::<Value>("not json").unwrap_err();
-    let client = FakeGitHubClient {
-        result: Err(GitHubError::Json(Arc::new(configured))),
-    };
+    let client = FakeGitHubClient::recently_updated(Err(GitHubError::Json(Arc::new(configured))));
 
     let error = client
         .search_recently_updated_repositories()
@@ -321,14 +340,13 @@ async fn discovery_queue_deduplicates_candidates_in_one_batch() {
 async fn discovery_uses_github_candidates_when_queue_is_empty() {
     let pool = connect(&Config::test()).await.unwrap();
     let store = RepositoryStore::new(pool);
-    let service =
-        DiscoveryService::new(store.clone()).with_github_client(Some(Arc::new(FakeGitHubClient {
-            result: Ok((
-                "stars:10..5000 fork:false archived:false pushed:>2026-02-27 sort:updated-desc"
-                    .to_string(),
-                vec![sample_repo("acme/live", 401)],
-            )),
-        })));
+    let service = DiscoveryService::new(store.clone()).with_github_client(Some(Arc::new(
+        FakeGitHubClient::recently_updated(Ok((
+            "stars:10..5000 fork:false archived:false pushed:>2026-02-27 sort:updated-desc"
+                .to_string(),
+            vec![sample_repo("acme/live", 401)],
+        ))),
+    )));
 
     service.ensure_candidates().await.unwrap();
 
@@ -337,7 +355,7 @@ async fn discovery_uses_github_candidates_when_queue_is_empty() {
 }
 
 #[tokio::test]
-async fn discovery_prefers_oauth_token_client_when_auth_token_exists() {
+async fn discovery_prefers_starred_oauth_client_when_auth_token_exists() {
     let pool = connect(&Config::test()).await.unwrap();
     let store = RepositoryStore::new(pool.clone());
     sqlx::query(
@@ -350,20 +368,47 @@ async fn discovery_prefers_oauth_token_client_when_auth_token_exists() {
     .await
     .unwrap();
 
-    let fallback_client = Arc::new(FakeGitHubClient {
-        result: Ok((
-            "fallback query".to_string(),
-            vec![sample_repo("acme/fallback", 402)],
-        )),
-    });
+    let fallback_client = Arc::new(FakeGitHubClient::recently_updated(Ok((
+        "fallback query".to_string(),
+        vec![sample_repo("acme/fallback", 402)],
+    ))));
     let service = DiscoveryService::new(store.clone())
         .with_github_client(Some(fallback_client))
         .with_oauth_github_client_factory(Arc::new(|token| {
             assert_eq!(token, "gho_oauth_token");
+            Arc::new(FakeGitHubClient::starred(Ok((
+                "starred oauth query".to_string(),
+                vec![sample_repo("acme/oauth-starred", 403)],
+            ))))
+        }));
+
+    service.ensure_candidates().await.unwrap();
+
+    let next = store.next_queued_repository().await.unwrap().unwrap();
+    assert_eq!(next.full_name, "acme/oauth-starred");
+}
+
+#[tokio::test]
+async fn discovery_does_not_call_recently_updated_for_oauth_token() {
+    let pool = connect(&Config::test()).await.unwrap();
+    let store = RepositoryStore::new(pool.clone());
+    sqlx::query(
+        r#"
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 1, 'octocat', 'gho_oauth_token')
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let service =
+        DiscoveryService::new(store.clone()).with_oauth_github_client_factory(Arc::new(|_| {
             Arc::new(FakeGitHubClient {
-                result: Ok((
-                    "oauth query".to_string(),
-                    vec![sample_repo("acme/oauth", 403)],
+                recently_updated_result: Err(GitHubError::HttpStatus(StatusCode::IM_A_TEAPOT)),
+                starred_result: Ok((
+                    "starred oauth query".to_string(),
+                    vec![sample_repo("acme/oauth-starred-only", 406)],
                 )),
             })
         }));
@@ -371,7 +416,52 @@ async fn discovery_prefers_oauth_token_client_when_auth_token_exists() {
     service.ensure_candidates().await.unwrap();
 
     let next = store.next_queued_repository().await.unwrap().unwrap();
-    assert_eq!(next.full_name, "acme/oauth");
+    assert_eq!(next.full_name, "acme/oauth-starred-only");
+}
+
+#[tokio::test]
+async fn discovery_records_starred_oauth_strategy_and_query() {
+    let pool = connect(&Config::test()).await.unwrap();
+    let store = RepositoryStore::new(pool.clone());
+    sqlx::query(
+        r#"
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 1, 'octocat', 'gho_oauth_token')
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let service =
+        DiscoveryService::new(store.clone()).with_oauth_github_client_factory(Arc::new(|_| {
+            Arc::new(FakeGitHubClient::starred(Ok((
+                "stars:10..5000 fork:false archived:false pushed:>2026-02-27 (language:Rust OR topic:rust OR topic:cli) sort:updated-desc".to_string(),
+                vec![sample_repo("acme/starred-batch", 407)],
+            ))))
+        }));
+
+    service.ensure_candidates().await.unwrap();
+
+    let row: (String, String, i64, i64) = sqlx::query_as(
+        r#"
+        SELECT strategy, query, candidate_count, accepted_count
+        FROM discovery_batches
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(row.0, "starred_oauth_search");
+    assert_eq!(
+        row.1,
+        "stars:10..5000 fork:false archived:false pushed:>2026-02-27 (language:Rust OR topic:rust OR topic:cli) sort:updated-desc"
+    );
+    assert_eq!(row.2, 1);
+    assert_eq!(row.3, 1);
 }
 
 #[tokio::test]
@@ -388,18 +478,16 @@ async fn discovery_falls_back_to_github_token_client_when_oauth_client_fails() {
     .await
     .unwrap();
 
-    let fallback_client = Arc::new(FakeGitHubClient {
-        result: Ok((
-            "fallback query".to_string(),
-            vec![sample_repo("acme/fallback", 404)],
-        )),
-    });
+    let fallback_client = Arc::new(FakeGitHubClient::recently_updated(Ok((
+        "fallback query".to_string(),
+        vec![sample_repo("acme/fallback", 404)],
+    ))));
     let service = DiscoveryService::new(store.clone())
         .with_github_client(Some(fallback_client))
         .with_oauth_github_client_factory(Arc::new(|_| {
-            Arc::new(FakeGitHubClient {
-                result: Err(GitHubError::HttpStatus(StatusCode::UNAUTHORIZED)),
-            })
+            Arc::new(FakeGitHubClient::starred(Err(GitHubError::HttpStatus(
+                StatusCode::UNAUTHORIZED,
+            ))))
         }));
 
     service.ensure_candidates().await.unwrap();
@@ -412,12 +500,10 @@ async fn discovery_falls_back_to_github_token_client_when_oauth_client_fails() {
 async fn discovery_uses_github_token_client_when_oauth_token_is_missing() {
     let pool = connect(&Config::test()).await.unwrap();
     let store = RepositoryStore::new(pool);
-    let fallback_client = Arc::new(FakeGitHubClient {
-        result: Ok((
-            "fallback query".to_string(),
-            vec![sample_repo("acme/fallback-only", 405)],
-        )),
-    });
+    let fallback_client = Arc::new(FakeGitHubClient::recently_updated(Ok((
+        "fallback query".to_string(),
+        vec![sample_repo("acme/fallback-only", 405)],
+    ))));
     let service = DiscoveryService::new(store.clone())
         .with_github_client(Some(fallback_client))
         .with_oauth_github_client_factory(Arc::new(|_| {
@@ -446,10 +532,9 @@ async fn discovery_falls_back_to_seed_without_github_client() {
 async fn discovery_falls_back_to_seed_when_github_fails() {
     let pool = connect(&Config::test()).await.unwrap();
     let store = RepositoryStore::new(pool);
-    let service =
-        DiscoveryService::new(store.clone()).with_github_client(Some(Arc::new(FakeGitHubClient {
-            result: Err(GitHubError::HttpStatus(StatusCode::FORBIDDEN)),
-        })));
+    let service = DiscoveryService::new(store.clone()).with_github_client(Some(Arc::new(
+        FakeGitHubClient::recently_updated(Err(GitHubError::HttpStatus(StatusCode::FORBIDDEN))),
+    )));
 
     service.ensure_candidates().await.unwrap();
 
@@ -461,14 +546,41 @@ async fn discovery_falls_back_to_seed_when_github_fails() {
 async fn discovery_falls_back_to_seed_when_github_returns_no_accepted_candidates() {
     let pool = connect(&Config::test()).await.unwrap();
     let store = RepositoryStore::new(pool.clone());
+    let service = DiscoveryService::new(store.clone()).with_github_client(Some(Arc::new(
+        FakeGitHubClient::recently_updated(Ok((
+            "stars:10..5000 fork:false archived:false pushed:>2026-02-27 sort:updated-desc"
+                .to_string(),
+            Vec::new(),
+        ))),
+    )));
+
+    service.ensure_candidates().await.unwrap();
+
+    let next = store.next_queued_repository().await.unwrap().unwrap();
+    assert_eq!(next.full_name, "rust-lang/rust");
+}
+
+#[tokio::test]
+async fn discovery_falls_back_to_seed_when_starred_oauth_returns_no_accepted_candidates() {
+    let pool = connect(&Config::test()).await.unwrap();
+    let store = RepositoryStore::new(pool.clone());
+    sqlx::query(
+        r#"
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 1, 'octocat', 'gho_oauth_token')
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
     let service =
-        DiscoveryService::new(store.clone()).with_github_client(Some(Arc::new(FakeGitHubClient {
-            result: Ok((
-                "stars:10..5000 fork:false archived:false pushed:>2026-02-27 sort:updated-desc"
-                    .to_string(),
+        DiscoveryService::new(store.clone()).with_oauth_github_client_factory(Arc::new(|_| {
+            Arc::new(FakeGitHubClient::starred(Ok((
+                "starred repositories did not include language or topic interests".to_string(),
                 Vec::new(),
-            )),
-        })));
+            ))))
+        }));
 
     service.ensure_candidates().await.unwrap();
 

@@ -1,0 +1,30 @@
+[
+  {
+    "id": 1001,
+    "name": "react",
+    "full_name": "facebook/react",
+    "language": "JavaScript",
+    "topics": ["react", "javascript", "frontend"]
+  },
+  {
+    "id": 1002,
+    "name": "vite",
+    "full_name": "vitejs/vite",
+    "language": "TypeScript",
+    "topics": ["vite", "frontend", "typescript"]
+  },
+  {
+    "id": 1003,
+    "name": "rust",
+    "full_name": "rust-lang/rust",
+    "language": "Rust",
+    "topics": ["rust", "compiler", "systems-programming"]
+  },
+  {
+    "id": 1004,
+    "name": "ripgrep",
+    "full_name": "BurntSushi/ripgrep",
+    "language": "Rust",
+    "topics": ["rust", "cli", "search"]
+  }
+]

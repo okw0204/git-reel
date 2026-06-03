@@ -39,6 +39,10 @@ pub trait GitHubDiscoveryClient: Send + Sync {
     async fn search_recently_updated_repositories(
         &self,
     ) -> Result<(String, Vec<NewRepository>), GitHubError>;
+
+    async fn search_starred_repositories(
+        &self,
+    ) -> Result<(String, Vec<NewRepository>), GitHubError>;
 }
 
 pub struct GitHubClient {
@@ -83,15 +87,12 @@ impl GitHubClient {
         let body = response.text().await?;
         parse_graphql_readme_preview(&body)
     }
-}
 
-#[async_trait]
-impl GitHubDiscoveryClient for GitHubClient {
-    async fn search_recently_updated_repositories(
+    async fn search_repositories(
         &self,
+        query: String,
     ) -> Result<(String, Vec<NewRepository>), GitHubError> {
         // Search API で候補一覧を取り、README preview は各候補の補助情報として後段で足す。
-        let query = recently_updated_search_query();
         let response = self
             .http
             .get("https://api.github.com/search/repositories")
@@ -109,7 +110,6 @@ impl GitHubDiscoveryClient for GitHubClient {
 
         let body = response.text().await?;
         let mut repositories = parse_search_response(&body)?;
-        // README 取得は並列化しつつ候補ごとに timeout し、遅いリポジトリだけ preview なしで続行する。
         let readme_requests =
             repositories
                 .iter()
@@ -143,7 +143,53 @@ impl GitHubDiscoveryClient for GitHubClient {
                 }
             }
         }
+
         Ok((query, repositories))
+    }
+
+    async fn starred_repositories(&self) -> Result<Vec<StarredRepositoryInterest>, GitHubError> {
+        let response = self
+            .http
+            .get("https://api.github.com/user/starred")
+            .header(USER_AGENT, "git-reel")
+            .header(ACCEPT, "application/vnd.github+json")
+            .header(AUTHORIZATION, format!("Bearer {}", self.token))
+            .query(&[("per_page", "50")])
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(GitHubError::HttpStatus(status));
+        }
+
+        let body = response.text().await?;
+        parse_starred_response(&body)
+    }
+}
+
+#[async_trait]
+impl GitHubDiscoveryClient for GitHubClient {
+    async fn search_recently_updated_repositories(
+        &self,
+    ) -> Result<(String, Vec<NewRepository>), GitHubError> {
+        self.search_repositories(recently_updated_search_query())
+            .await
+    }
+
+    async fn search_starred_repositories(
+        &self,
+    ) -> Result<(String, Vec<NewRepository>), GitHubError> {
+        let starred = self.starred_repositories().await?;
+        let Some(query) = build_starred_discovery_search_query(&starred, Utc::now().date_naive())
+        else {
+            return Ok((
+                "starred repositories did not include language or topic interests".to_string(),
+                Vec::new(),
+            ));
+        };
+
+        self.search_repositories(query).await
     }
 }
 
@@ -201,6 +247,12 @@ struct SearchLicense {
     spdx_id: String,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct StarredRepositoryInterest {
+    pub language: Option<String>,
+    pub topics: Vec<String>,
+}
+
 #[derive(Deserialize)]
 struct GraphQlResponse {
     data: GraphQlData,
@@ -253,6 +305,104 @@ pub fn build_recently_updated_search_query(today: NaiveDate) -> String {
     )
 }
 
+pub fn build_starred_discovery_search_query(
+    starred: &[StarredRepositoryInterest],
+    today: NaiveDate,
+) -> Option<String> {
+    let mut language_counts = std::collections::HashMap::<String, usize>::new();
+    let mut topic_counts = std::collections::HashMap::<String, usize>::new();
+
+    for repository in starred {
+        if let Some(language) = repository
+            .language
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            *language_counts.entry(language.to_string()).or_default() += 1;
+        }
+        for topic in repository.topics.iter().filter(|value| !value.is_empty()) {
+            *topic_counts.entry(topic.to_ascii_lowercase()).or_default() += 1;
+        }
+    }
+
+    let mut languages = ranked_keys(language_counts);
+    languages.truncate(2);
+    let mut topics = ranked_keys(topic_counts);
+    topics.truncate(4);
+
+    let mut qualifiers = Vec::new();
+    for language in &languages {
+        push_unique(
+            &mut qualifiers,
+            format!("language:{}", query_value(language)),
+        );
+    }
+    for topic in &topics {
+        push_unique(&mut qualifiers, format!("topic:{topic}"));
+    }
+    for language in languages {
+        for neighbor in topic_neighbors(&language.to_ascii_lowercase()) {
+            push_unique(&mut qualifiers, format!("topic:{neighbor}"));
+        }
+    }
+    for topic in topics {
+        push_unique(&mut qualifiers, format!("topic:{topic}"));
+        for neighbor in topic_neighbors(&topic) {
+            push_unique(&mut qualifiers, format!("topic:{neighbor}"));
+        }
+    }
+    qualifiers.truncate(8);
+
+    if qualifiers.is_empty() {
+        return None;
+    }
+
+    let pushed_after = today - Duration::days(90);
+    Some(format!(
+        "stars:10..5000 fork:false archived:false pushed:>{} ({}) sort:updated-desc",
+        pushed_after.format("%Y-%m-%d"),
+        qualifiers.join(" OR ")
+    ))
+}
+
+fn ranked_keys(counts: std::collections::HashMap<String, usize>) -> Vec<String> {
+    let mut entries = counts.into_iter().collect::<Vec<_>>();
+    entries.sort_by(|(left_key, left_count), (right_key, right_count)| {
+        right_count
+            .cmp(left_count)
+            .then_with(|| left_key.cmp(right_key))
+    });
+    entries.into_iter().map(|(key, _)| key).collect()
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !values.iter().any(|existing| existing == &value) {
+        values.push(value);
+    }
+}
+
+fn query_value(value: &str) -> String {
+    if value
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'))
+    {
+        return value.to_string();
+    }
+
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn topic_neighbors(topic: &str) -> &'static [&'static str] {
+    match topic {
+        "react" => &["vite", "frontend", "typescript"],
+        "rust" => &["cli", "wasm", "systems-programming"],
+        "typescript" => &["frontend", "nodejs", "web"],
+        "python" => &["machine-learning", "data-science", "automation"],
+        "cli" => &["terminal", "developer-tools", "rust"],
+        _ => &[],
+    }
+}
+
 // GitHub のレスポンス型を API 境界で NewRepository に寄せ、DB 層を外部 API の形から切り離す。
 pub fn parse_search_response(body: &str) -> Result<Vec<NewRepository>, GitHubError> {
     let response: SearchResponse = serde_json::from_str(body)?;
@@ -275,6 +425,11 @@ pub fn parse_search_response(body: &str) -> Result<Vec<NewRepository>, GitHubErr
             readme_preview: None,
         })
         .collect())
+}
+
+pub fn parse_starred_response(body: &str) -> Result<Vec<StarredRepositoryInterest>, GitHubError> {
+    let repositories: Vec<StarredRepositoryInterest> = serde_json::from_str(body)?;
+    Ok(repositories)
 }
 
 // README は存在しない・取得できないケースが普通にあるため、失敗ではなく None として扱える形にする。
