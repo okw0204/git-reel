@@ -113,6 +113,30 @@ impl DiscoveryService {
         }
     }
 
+    async fn try_starred_github_discovery(
+        &self,
+        strategy: &str,
+        github_client: Arc<dyn GitHubDiscoveryClient>,
+    ) -> Result<Option<usize>, ApiError> {
+        match github_client.search_starred_repositories().await {
+            Ok((query, repositories)) => {
+                let candidates = repositories
+                    .into_iter()
+                    .map(DiscoveryCandidate::from_new_repository)
+                    .collect();
+                let accepted = self
+                    .enqueue_candidates(strategy, &query, candidates)
+                    .await?;
+                Ok(Some(accepted))
+            }
+            Err(error) => {
+                // GitHub 側の一時失敗でリール全体を止めず、次の補充元へフォールバックする。
+                tracing::warn!(?error, strategy, "github discovery failed; trying fallback");
+                Ok(None)
+            }
+        }
+    }
+
     pub async fn ensure_candidates(&self) -> Result<(), ApiError> {
         // 候補が残っている間は補充せず、空になった時だけ優先順に補充元を試す。
         if self.store.next_queued_repository().await?.is_some() {
@@ -120,10 +144,10 @@ impl DiscoveryService {
         }
 
         if let Some(token) = self.store.auth_access_token().await? {
-            // OAuth token はユーザー接続に紐づくため、環境変数 token より優先して使う。
+            // OAuth token はユーザー接続に紐づくため、starred repositories の傾向を優先して使う。
             let github_client = (self.oauth_github_client_factory)(token);
             if let Some(accepted) = self
-                .try_github_discovery("recently_updated_oauth_search", github_client)
+                .try_starred_github_discovery("starred_oauth_search", github_client)
                 .await?
             {
                 if accepted > 0 {
