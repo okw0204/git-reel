@@ -39,6 +39,10 @@ pub trait GitHubDiscoveryClient: Send + Sync {
     async fn search_recently_updated_repositories(
         &self,
     ) -> Result<(String, Vec<NewRepository>), GitHubError>;
+
+    async fn search_starred_repositories(
+        &self,
+    ) -> Result<(String, Vec<NewRepository>), GitHubError>;
 }
 
 pub struct GitHubClient {
@@ -83,15 +87,12 @@ impl GitHubClient {
         let body = response.text().await?;
         parse_graphql_readme_preview(&body)
     }
-}
 
-#[async_trait]
-impl GitHubDiscoveryClient for GitHubClient {
-    async fn search_recently_updated_repositories(
+    async fn search_repositories(
         &self,
+        query: String,
     ) -> Result<(String, Vec<NewRepository>), GitHubError> {
         // Search API で候補一覧を取り、README preview は各候補の補助情報として後段で足す。
-        let query = recently_updated_search_query();
         let response = self
             .http
             .get("https://api.github.com/search/repositories")
@@ -109,7 +110,6 @@ impl GitHubDiscoveryClient for GitHubClient {
 
         let body = response.text().await?;
         let mut repositories = parse_search_response(&body)?;
-        // README 取得は並列化しつつ候補ごとに timeout し、遅いリポジトリだけ preview なしで続行する。
         let readme_requests =
             repositories
                 .iter()
@@ -143,7 +143,53 @@ impl GitHubDiscoveryClient for GitHubClient {
                 }
             }
         }
+
         Ok((query, repositories))
+    }
+
+    async fn starred_repositories(&self) -> Result<Vec<StarredRepositoryInterest>, GitHubError> {
+        let response = self
+            .http
+            .get("https://api.github.com/user/starred")
+            .header(USER_AGENT, "git-reel")
+            .header(ACCEPT, "application/vnd.github+json")
+            .header(AUTHORIZATION, format!("Bearer {}", self.token))
+            .query(&[("per_page", "50")])
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(GitHubError::HttpStatus(status));
+        }
+
+        let body = response.text().await?;
+        parse_starred_response(&body)
+    }
+}
+
+#[async_trait]
+impl GitHubDiscoveryClient for GitHubClient {
+    async fn search_recently_updated_repositories(
+        &self,
+    ) -> Result<(String, Vec<NewRepository>), GitHubError> {
+        self.search_repositories(recently_updated_search_query())
+            .await
+    }
+
+    async fn search_starred_repositories(
+        &self,
+    ) -> Result<(String, Vec<NewRepository>), GitHubError> {
+        let starred = self.starred_repositories().await?;
+        let Some(query) = build_starred_discovery_search_query(&starred, Utc::now().date_naive())
+        else {
+            return Ok((
+                "starred repositories did not include language or topic interests".to_string(),
+                Vec::new(),
+            ));
+        };
+
+        self.search_repositories(query).await
     }
 }
 
