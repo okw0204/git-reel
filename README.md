@@ -97,7 +97,7 @@ npm run dev:web
 | 変数 | 用途 | 既定値 |
 | --- | --- | --- |
 | `GIT_REEL_DATABASE_URL` | SQLite の接続先 | `sqlite:git-reel.db` |
-| `GITHUB_TOKEN` | OAuth token がない場合の GitHub Search API fallback 用トークン | 未設定 |
+| `GITHUB_TOKEN` | OAuth token がない場合、取得失敗時、候補を採用できない場合の GitHub Search API fallback 用トークン | 未設定 |
 | `GITHUB_CLIENT_ID` | GitHub OAuth App の Client ID | 未設定 |
 | `GITHUB_CLIENT_SECRET` | GitHub OAuth App の Client Secret | 未設定 |
 | `GIT_REEL_PUBLIC_BASE_URL` | API 側の公開 URL。OAuth コールバック URL の生成に使う | `http://127.0.0.1:4317` |
