@@ -285,8 +285,16 @@ pub fn build_starred_discovery_search_query(
     topics.truncate(4);
 
     let mut qualifiers = Vec::new();
+    for language in &languages {
+        push_unique(
+            &mut qualifiers,
+            format!("language:{}", query_value(language)),
+        );
+    }
+    for topic in &topics {
+        push_unique(&mut qualifiers, format!("topic:{topic}"));
+    }
     for language in languages {
-        push_unique(&mut qualifiers, format!("language:{language}"));
         for neighbor in topic_neighbors(&language.to_ascii_lowercase()) {
             push_unique(&mut qualifiers, format!("topic:{neighbor}"));
         }
@@ -325,6 +333,17 @@ fn push_unique(values: &mut Vec<String>, value: String) {
     if !values.iter().any(|existing| existing == &value) {
         values.push(value);
     }
+}
+
+fn query_value(value: &str) -> String {
+    if value
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'))
+    {
+        return value.to_string();
+    }
+
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 fn topic_neighbors(topic: &str) -> &'static [&'static str] {

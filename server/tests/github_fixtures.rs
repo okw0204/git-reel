@@ -124,6 +124,44 @@ fn returns_none_when_starred_repositories_have_no_interests() {
 }
 
 #[test]
+fn quotes_starred_discovery_languages_when_needed() {
+    let starred = parse_starred_response(
+        r#"[
+            {"id":1,"name":"notebook","full_name":"acme/notebook","language":"Jupyter Notebook","topics":[]}
+        ]"#,
+    )
+    .unwrap();
+
+    let query = build_starred_discovery_search_query(
+        &starred,
+        NaiveDate::from_ymd_opt(2026, 5, 28).unwrap(),
+    )
+    .unwrap();
+
+    assert!(query.contains("language:\"Jupyter Notebook\""));
+    assert!(!query.contains("language:Jupyter Notebook"));
+}
+
+#[test]
+fn prioritizes_actual_topics_before_neighbor_expansion() {
+    let starred = parse_starred_response(
+        r#"[
+            {"id":1,"name":"cli","full_name":"acme/cli","language":"Rust","topics":["biology"]},
+            {"id":2,"name":"web","full_name":"acme/web","language":"TypeScript","topics":["genomics"]}
+        ]"#,
+    )
+    .unwrap();
+
+    let query = build_starred_discovery_search_query(
+        &starred,
+        NaiveDate::from_ymd_opt(2026, 5, 28).unwrap(),
+    )
+    .unwrap();
+
+    assert!(query.contains("topic:biology"));
+}
+
+#[test]
 fn creates_github_client_from_token() {
     let client = git_reel_server::github::GitHubClient::new("secret-token".to_string());
 
