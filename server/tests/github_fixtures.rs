@@ -1,7 +1,8 @@
 use chrono::NaiveDate;
 use git_reel_server::github::{
-    build_recently_updated_search_query, parse_graphql_readme_preview, parse_oauth_token_response,
-    parse_search_response, parse_user_response,
+    build_recently_updated_search_query, build_starred_discovery_search_query,
+    parse_graphql_readme_preview, parse_oauth_token_response, parse_search_response,
+    parse_starred_response, parse_user_response,
 };
 
 #[test]
@@ -84,6 +85,42 @@ fn builds_recently_updated_live_search_query() {
         query,
         "stars:10..5000 fork:false archived:false pushed:>2026-02-27 sort:updated-desc"
     );
+}
+
+#[test]
+fn builds_starred_discovery_query_from_language_and_topics() {
+    let fixture = include_str!("fixtures/starred_repositories.json");
+    let starred = parse_starred_response(fixture).unwrap();
+    let query = build_starred_discovery_search_query(
+        &starred,
+        NaiveDate::from_ymd_opt(2026, 5, 28).unwrap(),
+    )
+    .unwrap();
+
+    assert!(query.starts_with("stars:10..5000 fork:false archived:false pushed:>2026-02-27 ("));
+    assert!(query.ends_with(") sort:updated-desc"));
+    assert!(query.contains("language:Rust"));
+    assert!(query.contains("topic:rust"));
+    assert!(query.contains("topic:cli"));
+    assert!(query.contains("topic:wasm"));
+    assert!(query.contains("topic:frontend"));
+}
+
+#[test]
+fn returns_none_when_starred_repositories_have_no_interests() {
+    let starred = parse_starred_response(
+        r#"[
+            {"id":1,"name":"empty","full_name":"acme/empty","language":null,"topics":[]}
+        ]"#,
+    )
+    .unwrap();
+
+    let query = build_starred_discovery_search_query(
+        &starred,
+        NaiveDate::from_ymd_opt(2026, 5, 28).unwrap(),
+    );
+
+    assert_eq!(query, None);
 }
 
 #[test]
