@@ -2,7 +2,7 @@
 
 Git Reel は、GitHub リポジトリをリール形式で気軽に眺めるための local-first アプリです。検索 UI や GitHub Trending の置き換えではなく、1 件ずつ候補を見て、気になったものをローカルの「保存済み」として残す体験に重点を置いています。
 
-現在の MVP はローカル開発向けです。GitHub への書き込みは行わず、OAuth 接続または開発用接続でリール操作、保存、スキップ、履歴、メモ、タグを確認できます。OAuth 接続済みの場合は保存済み OAuth token で starred repositories を読み取り、language と topic の傾向から GitHub Search API の候補を補充します。未接続または取得失敗時は `GITHUB_TOKEN`、最後にシードされた候補リポジトリへフォールバックします。
+現在の MVP はローカル開発向けです。GitHub への書き込みは行わず、OAuth 接続または開発用接続でリール操作、保存、スキップ、履歴、メモ、タグを確認できます。OAuth 接続済みの場合は保存済み OAuth token で starred repositories を読み取り、language と topic の傾向から GitHub Search API の候補を補充します。未接続、取得失敗、または候補を採用できない場合は `GITHUB_TOKEN`、最後にシードされた候補リポジトリへフォールバックします。
 
 ## 主な機能
 
@@ -78,7 +78,7 @@ make dev
 
 OAuth 未設定時は、リール画面の「開発用に接続」からローカルのシード候補を閲覧できます。この接続はローカル状態だけを接続済みにする開発用の導線で、GitHub OAuth token は保存されません。
 
-`GITHUB_CLIENT_ID` と `GITHUB_CLIENT_SECRET` を設定して起動すると、開発用接続は無効になり、リール画面の接続ボタンは「GitHubに接続」になります。OAuth 接続後は保存済み OAuth token で starred repositories を読み取り、その language/topic 傾向から候補を取得します。starred 取得や Search が失敗した場合は `GITHUB_TOKEN`、最後にローカル seed へフォールバックします。
+`GITHUB_CLIENT_ID` と `GITHUB_CLIENT_SECRET` を設定して起動すると、開発用接続は無効になり、リール画面の接続ボタンは「GitHubに接続」になります。OAuth 接続後は保存済み OAuth token で starred repositories を読み取り、その language/topic 傾向から候補を取得します。starred 取得や Search が失敗した場合、または候補を採用できない場合は `GITHUB_TOKEN`、最後にローカル seed へフォールバックします。
 
 API と Web アプリを個別に確認したい場合は、別々のターミナルで起動します。
 
@@ -153,5 +153,5 @@ make build
 - UI の表示文言は日本語を基本にしています。
 - GitHub 由来のリポジトリ名、説明、README、トピックなどは元の言語を保持します。
 - MVP では GitHub Star、Watch、リポジトリ情報の更新など、GitHub への書き込み操作は扱いません。
-- OAuth 接続済みの場合は保存済み OAuth token で starred repositories の language/topic 傾向を読み取り、OAuth token がない場合や取得失敗時は `GITHUB_TOKEN`、最後にローカルのシード候補へフォールバックします。
+- OAuth 接続済みの場合は保存済み OAuth token で starred repositories の language/topic 傾向を読み取り、OAuth token がない場合、取得失敗時、候補を採用できない場合は `GITHUB_TOKEN`、最後にローカルのシード候補へフォールバックします。
 - 将来的な Tauri 化を見据え、フロントエンドとローカル API の境界を明確にしています。
