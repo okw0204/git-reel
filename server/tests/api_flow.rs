@@ -47,6 +47,15 @@ impl GitHubDiscoveryClient for FakeGitHubClient {
             Err(error) => Err(error.clone()),
         }
     }
+
+    async fn search_starred_repositories(
+        &self,
+    ) -> Result<(String, Vec<NewRepository>), GitHubError> {
+        match &self.result {
+            Ok((query, repositories)) => Ok((query.clone(), repositories.clone())),
+            Err(error) => Err(error.clone()),
+        }
+    }
 }
 
 #[tokio::test]
