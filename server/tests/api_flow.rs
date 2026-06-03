@@ -420,6 +420,51 @@ async fn discovery_does_not_call_recently_updated_for_oauth_token() {
 }
 
 #[tokio::test]
+async fn discovery_records_starred_oauth_strategy_and_query() {
+    let pool = connect(&Config::test()).await.unwrap();
+    let store = RepositoryStore::new(pool.clone());
+    sqlx::query(
+        r#"
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 1, 'octocat', 'gho_oauth_token')
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let service =
+        DiscoveryService::new(store.clone()).with_oauth_github_client_factory(Arc::new(|_| {
+            Arc::new(FakeGitHubClient::starred(Ok((
+                "stars:10..5000 fork:false archived:false pushed:>2026-02-27 (language:Rust OR topic:rust OR topic:cli) sort:updated-desc".to_string(),
+                vec![sample_repo("acme/starred-batch", 407)],
+            ))))
+        }));
+
+    service.ensure_candidates().await.unwrap();
+
+    let row: (String, String, i64, i64) = sqlx::query_as(
+        r#"
+        SELECT strategy, query, candidate_count, accepted_count
+        FROM discovery_batches
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(row.0, "starred_oauth_search");
+    assert_eq!(
+        row.1,
+        "stars:10..5000 fork:false archived:false pushed:>2026-02-27 (language:Rust OR topic:rust OR topic:cli) sort:updated-desc"
+    );
+    assert_eq!(row.2, 1);
+    assert_eq!(row.3, 1);
+}
+
+#[tokio::test]
 async fn discovery_falls_back_to_github_token_client_when_oauth_client_fails() {
     let pool = connect(&Config::test()).await.unwrap();
     let store = RepositoryStore::new(pool.clone());
@@ -508,6 +553,34 @@ async fn discovery_falls_back_to_seed_when_github_returns_no_accepted_candidates
             Vec::new(),
         ))),
     )));
+
+    service.ensure_candidates().await.unwrap();
+
+    let next = store.next_queued_repository().await.unwrap().unwrap();
+    assert_eq!(next.full_name, "rust-lang/rust");
+}
+
+#[tokio::test]
+async fn discovery_falls_back_to_seed_when_starred_oauth_returns_no_accepted_candidates() {
+    let pool = connect(&Config::test()).await.unwrap();
+    let store = RepositoryStore::new(pool.clone());
+    sqlx::query(
+        r#"
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 1, 'octocat', 'gho_oauth_token')
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let service =
+        DiscoveryService::new(store.clone()).with_oauth_github_client_factory(Arc::new(|_| {
+            Arc::new(FakeGitHubClient::starred(Ok((
+                "starred repositories did not include language or topic interests".to_string(),
+                Vec::new(),
+            ))))
+        }));
 
     service.ensure_candidates().await.unwrap();
 
