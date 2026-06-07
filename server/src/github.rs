@@ -128,6 +128,7 @@ impl GitHubDiscoveryClient for GitHubClient {
                     repository.readme_preview = preview;
                 }
                 Ok(Err(error)) => {
+                    // README preview は候補カードの補助情報なので、取得失敗を検索結果全体の失敗にしない。
                     tracing::warn!(
                         ?error,
                         repository = %repository.full_name,
@@ -135,6 +136,7 @@ impl GitHubDiscoveryClient for GitHubClient {
                     );
                 }
                 Err(error) => {
+                    // timeout した候補だけ preview なしにし、他の候補の表示開始を遅らせない。
                     tracing::warn!(
                         ?error,
                         repository = %repository.full_name,

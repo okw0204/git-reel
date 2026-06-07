@@ -174,6 +174,7 @@ impl RepositoryStore {
     }
 
     pub async fn has_prior_interaction(&self, repository_id: i64) -> Result<bool, ApiError> {
+        // discovery 側の再投入防止で使うため、イベント種別ではなく接触済みかどうかだけを見る。
         let count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM repo_events WHERE repository_id = ?")
                 .bind(repository_id)
@@ -283,6 +284,7 @@ impl RepositoryStore {
     }
 
     pub async fn consume_repository(&self, repository_id: i64) -> Result<(), ApiError> {
+        // skip 済みの候補が次回の先頭候補として残らないよう、未消費のキュー行だけを閉じる。
         sqlx::query(
             "UPDATE discovery_queue SET consumed_at = CURRENT_TIMESTAMP WHERE repository_id = ? AND consumed_at IS NULL",
         )
@@ -418,6 +420,7 @@ impl RepositoryStore {
     }
 
     async fn find_by_normalized_name(&self, normalized: &str) -> Result<Repository, ApiError> {
+        // upsert 後は GitHub id の有無に関係なく、DB 内で一意な正規化名から最新行を取り直す。
         let row = sqlx::query("SELECT * FROM repositories WHERE normalized_full_name = ?")
             .bind(normalized)
             .fetch_one(&self.pool)

@@ -25,6 +25,7 @@ pub fn router() -> Router<AppState> {
 
 // current はプレビュー用なので、キューを消費せず現在の先頭候補だけを返す。
 async fn current(State(state): State<AppState>) -> Result<Json<ReelResponse>, ApiError> {
+    // 認証前は discovery を走らせず、フロントが接続導線を出せる empty_reason だけを返す。
     if !auth_connected(&state).await? {
         return Ok(Json(ReelResponse {
             repository: None,
@@ -49,6 +50,7 @@ async fn current(State(state): State<AppState>) -> Result<Json<ReelResponse>, Ap
 
 // next はユーザーが候補を見た操作として扱い、キュー消費と viewed 記録を行う。
 async fn next(State(state): State<AppState>) -> Result<Json<ReelResponse>, ApiError> {
+    // 未接続状態でキューを進めると、接続後に見ていない候補が履歴化されるため先に止める。
     if !auth_connected(&state).await? {
         return Ok(Json(ReelResponse {
             repository: None,
@@ -102,6 +104,7 @@ async fn skip(
         .repositories
         .record_event(id, RepoEventKind::Skipped)
         .await?;
+    // skipped は履歴として残し、キュー上では次候補へ進めるために別途 consumed にする。
     state.repositories.consume_repository(id).await?;
     Ok(Json(ActionResponse { ok: true }))
 }

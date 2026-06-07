@@ -121,6 +121,7 @@ async fn github_callback(
         ));
     }
 
+    // cookie と DB の両方を消費して、別ブラウザや再利用された state を callback として受け付けない。
     let deleted_rows = delete_oauth_state(&state, &returned_state).await?;
     if deleted_rows == 0 {
         return Err(ApiError::OAuth(
@@ -261,6 +262,7 @@ fn oauth_state_cookie_value(headers: &HeaderMap) -> Option<String> {
 
 fn redirect_to_public_app(state: &AppState) -> Result<Response, ApiError> {
     let mut response = Redirect::to(&state.config.public_app_url).into_response();
+    // 成功・失敗どちらの戻りでも state cookie を消し、次回 OAuth 開始時の古い照合値を残さない。
     response.headers_mut().insert(
         header::SET_COOKIE,
         HeaderValue::from_str(&clear_oauth_state_cookie())
@@ -300,6 +302,7 @@ async fn auth_state(State(state): State<AppState>) -> Result<Json<AuthStateRespo
             .fetch_optional(&state.pool)
             .await?;
     let oauth_configured = github_oauth_configured(&state);
+    // OAuth 設定済み環境では token が補充にも必要なので、古い dev-connect 状態だけでは接続済みにしない。
     let connected = row
         .as_ref()
         .map(|(connected, _, access_token)| {

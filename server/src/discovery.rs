@@ -126,6 +126,7 @@ impl DiscoveryService {
                 .try_github_discovery("recently_updated_oauth_search", github_client)
                 .await?
             {
+                // API 成功でも全候補が既読・保存済みなら accepted = 0 になり、次の補充元を試す。
                 if accepted > 0 {
                     return Ok(());
                 }
@@ -138,6 +139,7 @@ impl DiscoveryService {
                 .try_github_discovery("recently_updated_live_search", github_client.clone())
                 .await?
             {
+                // 環境変数 token でも採用候補がなければ、最後に seed でローカル体験を保つ。
                 if accepted > 0 {
                     return Ok(());
                 }
