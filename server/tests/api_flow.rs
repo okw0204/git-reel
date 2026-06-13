@@ -38,8 +38,15 @@ fn sample_repo(full_name: &str, github_id: i64) -> NewRepository {
     }
 }
 
+fn test_config_with_oauth() -> Config {
+    let mut config = Config::test();
+    config.github_client_id = Some("test-client".to_string());
+    config.github_client_secret = Some("test-secret".to_string());
+    config
+}
+
 async fn authenticated_test_app_with_candidates(repositories: Vec<NewRepository>) -> axum::Router {
-    let config = Config::test();
+    let config = test_config_with_oauth();
     let pool = connect(&config).await.unwrap();
     let store = RepositoryStore::new(pool.clone());
     sqlx::query(
@@ -522,7 +529,7 @@ async fn reel_next_save_and_skip_record_events() {
 
 #[tokio::test]
 async fn reel_next_requires_auth_before_consuming_queue() {
-    let config = Config::test();
+    let config = test_config_with_oauth();
     let pool = connect(&config).await.unwrap();
     let store = RepositoryStore::new(pool.clone());
     DiscoveryService::new(store.clone())
@@ -580,6 +587,41 @@ async fn reel_next_requires_auth_before_consuming_queue() {
 }
 
 #[tokio::test]
+async fn reel_next_rejects_saved_token_without_oauth_config() {
+    let config = Config::test();
+    let pool = connect(&config).await.unwrap();
+    sqlx::query(
+        r#"
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 1, 'octocat', 'gho_test_token')
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let state = AppState {
+        repositories: RepositoryStore::new(pool.clone()),
+        pool,
+        config,
+    };
+    let app = Router::new()
+        .nest("/api/reel", routes::reel::router())
+        .with_state(state);
+
+    let response = app
+        .oneshot(Request::post("/api/reel/next").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    assert!(payload["repository"].is_null());
+    assert_eq!(payload["empty_reason"], "auth_required");
+}
+
+#[tokio::test]
 async fn reel_next_rejects_tokenless_legacy_connection() {
     let config = Config::test();
     let pool = connect(&config).await.unwrap();
@@ -612,6 +654,63 @@ async fn reel_next_rejects_tokenless_legacy_connection() {
     let payload: Value = serde_json::from_slice(&body).unwrap();
     assert!(payload["repository"].is_null());
     assert_eq!(payload["empty_reason"], "auth_required");
+}
+
+#[tokio::test]
+async fn settings_reports_disconnected_for_legacy_or_unconfigured_auth_rows() {
+    let config = Config::test();
+    let pool = connect(&config).await.unwrap();
+    sqlx::query(
+        r#"
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 1, 'local-dev', NULL)
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let state = AppState {
+        repositories: RepositoryStore::new(pool.clone()),
+        pool: pool.clone(),
+        config,
+    };
+    let app = Router::new()
+        .nest("/api/settings", routes::settings::router())
+        .with_state(state);
+
+    let response = app
+        .clone()
+        .oneshot(Request::get("/api/settings").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(payload["auth_connected"], false);
+    assert!(payload["username"].is_null());
+
+    sqlx::query(
+        r#"
+        UPDATE auth_state
+        SET username = 'octocat', access_token = 'gho_test_token'
+        WHERE id = 1
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let response = app
+        .oneshot(Request::get("/api/settings").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(payload["auth_connected"], false);
+    assert!(payload["username"].is_null());
 }
 
 #[tokio::test]

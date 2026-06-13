@@ -127,6 +127,10 @@ async fn detail(
 }
 
 async fn auth_connected(state: &AppState) -> Result<bool, ApiError> {
+    if state.config.github_client_id.is_none() || state.config.github_client_secret.is_none() {
+        return Ok(false);
+    }
+
     let connected: Option<i64> = sqlx::query_scalar(
         "SELECT connected FROM auth_state WHERE id = 1 AND access_token IS NOT NULL",
     )

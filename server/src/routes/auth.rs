@@ -299,7 +299,9 @@ async fn auth_state(State(state): State<AppState>) -> Result<Json<AuthStateRespo
     // GitHub 接続は候補補充にも token が必要なので、token のない古い接続状態は接続済みにしない。
     let connected = row
         .as_ref()
-        .map(|(connected, _, access_token)| *connected == 1 && access_token.is_some())
+        .map(|(connected, _, access_token)| {
+            oauth_configured && *connected == 1 && access_token.is_some()
+        })
         .unwrap_or(false);
     Ok(Json(AuthStateResponse {
         connected,
@@ -372,6 +374,33 @@ mod tests {
             r#"
             INSERT INTO auth_state (id, connected, username, access_token)
             VALUES (1, 1, 'local-dev', NULL)
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let state = AppState {
+            repositories: RepositoryStore::new(pool.clone()),
+            pool,
+            config,
+        };
+
+        let Json(response) = auth_state(State(state)).await.unwrap();
+
+        assert!(!response.connected);
+        assert!(response.username.is_none());
+        assert!(!response.oauth_configured);
+        assert!(response.oauth_start_url.is_none());
+    }
+
+    #[tokio::test]
+    async fn auth_state_ignores_saved_token_without_oauth_config() {
+        let config = Config::test();
+        let pool = connect(&config).await.unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO auth_state (id, connected, username, access_token)
+            VALUES (1, 1, 'octocat', 'gho_test_token')
             "#,
         )
         .execute(&pool)
