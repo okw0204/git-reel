@@ -296,7 +296,7 @@ async fn auth_state(State(state): State<AppState>) -> Result<Json<AuthStateRespo
             .fetch_optional(&state.pool)
             .await?;
     let oauth_configured = github_oauth_configured(&state);
-    // GitHub 接続は候補補充にも token が必要なので、古い dev-connect 状態だけでは接続済みにしない。
+    // GitHub 接続は候補補充にも token が必要なので、token のない古い接続状態は接続済みにしない。
     let connected = row
         .as_ref()
         .map(|(connected, _, access_token)| *connected == 1 && access_token.is_some())

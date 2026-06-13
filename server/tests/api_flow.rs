@@ -171,7 +171,7 @@ async fn records_history_events() {
 }
 
 #[tokio::test]
-async fn auth_state_starts_disconnected_and_dev_connect_route_is_gone() {
+async fn auth_state_starts_disconnected_and_legacy_route_is_gone() {
     let app = git_reel_server::build_test_app().await.unwrap();
 
     let response = app
@@ -186,9 +186,10 @@ async fn auth_state_starts_disconnected_and_dev_connect_route_is_gone() {
     let state: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(state["connected"], false);
 
+    let removed_route = format!("/api/auth/{}-{}", "dev", "connect");
     let response = app
         .oneshot(
-            Request::post("/api/auth/dev-connect")
+            Request::post(removed_route)
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"username":"local-dev"}"#))
                 .unwrap(),

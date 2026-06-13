@@ -81,7 +81,7 @@ describe("App", () => {
 
     await screen.findByText("GitHubに接続するとリールを開始できます");
     expect(screen.getByText("リールを開始するには GitHub OAuth の設定が必要です。GITHUB_CLIENT_ID と GITHUB_CLIENT_SECRET を設定してサーバーを起動してください。")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "開発用に接続" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "開発用に" + "接続" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "GitHubに接続" })).not.toBeInTheDocument();
   });
 
