@@ -11,7 +11,6 @@ pub type GitHubClientFactory = Arc<dyn Fn(String) -> Arc<dyn GitHubDiscoveryClie
 #[derive(Clone)]
 pub struct DiscoveryService {
     store: RepositoryStore,
-    github_client: Option<Arc<dyn GitHubDiscoveryClient>>,
     oauth_github_client_factory: GitHubClientFactory,
 }
 
@@ -30,17 +29,8 @@ impl DiscoveryService {
     pub fn new(store: RepositoryStore) -> Self {
         Self {
             store,
-            github_client: None,
             oauth_github_client_factory: Arc::new(|token| Arc::new(GitHubClient::new(token))),
         }
-    }
-
-    pub fn with_github_client(
-        mut self,
-        github_client: Option<Arc<dyn GitHubDiscoveryClient>>,
-    ) -> Self {
-        self.github_client = github_client;
-        self
     }
 
     pub fn with_oauth_github_client_factory(mut self, factory: GitHubClientFactory) -> Self {
@@ -114,78 +104,23 @@ impl DiscoveryService {
     }
 
     pub async fn ensure_candidates(&self) -> Result<(), ApiError> {
-        // 候補が残っている間は補充せず、空になった時だけ優先順に補充元を試す。
+        // 候補が残っている間は補充せず、空になった時だけ保存済み OAuth token で補充を試す。
         if self.store.next_queued_repository().await?.is_some() {
             return Ok(());
         }
 
         if let Some(token) = self.store.auth_access_token().await? {
-            // OAuth token はユーザー接続に紐づくため、環境変数 token より優先して使う。
             let github_client = (self.oauth_github_client_factory)(token);
             if let Some(accepted) = self
                 .try_github_discovery("recently_updated_oauth_search", github_client)
                 .await?
             {
-                // API 成功でも全候補が既読・保存済みなら accepted = 0 になり、次の補充元を試す。
                 if accepted > 0 {
                     return Ok(());
                 }
             }
         }
 
-        // OAuth token がない・採用候補がない場合は、開発環境用の GITHUB_TOKEN client を試す。
-        if let Some(github_client) = self.github_client.as_ref() {
-            if let Some(accepted) = self
-                .try_github_discovery("recently_updated_live_search", github_client.clone())
-                .await?
-            {
-                // 環境変数 token でも採用候補がなければ、最後に seed でローカル体験を保つ。
-                if accepted > 0 {
-                    return Ok(());
-                }
-            }
-        }
-
-        // どの実 GitHub 補充元でも採用できない場合だけ、ローカル開発体験を保つため seed に落とす。
-        self.enqueue_seed_candidates().await?;
         Ok(())
     }
-
-    pub async fn seed_if_empty(&self) -> Result<(), ApiError> {
-        self.ensure_candidates().await
-    }
-
-    async fn enqueue_seed_candidates(&self) -> Result<usize, ApiError> {
-        self.enqueue_candidates(
-            "seed",
-            "local fixture seed",
-            vec![
-                seed_repo("rust-lang/rust", 1, "Rust", 98000),
-                seed_repo("tauri-apps/tauri", 2, "Rust", 88000),
-                seed_repo("sqlite/sqlite", 3, "C", 7000),
-            ],
-        )
-        .await
-    }
-}
-
-fn seed_repo(full_name: &str, github_id: i64, language: &str, stars: i64) -> DiscoveryCandidate {
-    let (owner, name) = full_name.split_once('/').unwrap();
-    DiscoveryCandidate::from_new_repository(NewRepository {
-        github_id: Some(github_id),
-        owner: owner.to_string(),
-        name: name.to_string(),
-        full_name: full_name.to_string(),
-        description: Some("ローカル開発用の候補リポジトリです".to_string()),
-        primary_language: Some(language.to_string()),
-        stars,
-        forks: stars / 12,
-        license: Some("MIT".to_string()),
-        updated_at: "2026-05-25T00:00:00Z".to_string(),
-        topics: vec!["developer-tools".to_string(), "open-source".to_string()],
-        html_url: format!("https://github.com/{full_name}"),
-        readme_preview: Some(
-            "This repository is included in the development discovery seed.".to_string(),
-        ),
-    })
 }
