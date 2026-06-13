@@ -1,18 +1,23 @@
 use axum::{
     body::Body,
     http::{Request, StatusCode},
+    routing::get,
+    Router,
 };
 use git_reel_server::{
+    app::AppState,
     config::Config,
     db::connect,
     discovery::{DiscoveryCandidate, DiscoveryService},
     github::{GitHubDiscoveryClient, GitHubError},
     models::{NewRepository, RepoEventKind},
     repositories::RepositoryStore,
+    routes,
 };
 use serde_json::Value;
 use std::sync::Arc;
 use tower::ServiceExt;
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 fn sample_repo(full_name: &str, github_id: i64) -> NewRepository {
     let (owner, name) = full_name.split_once('/').unwrap();
@@ -31,6 +36,48 @@ fn sample_repo(full_name: &str, github_id: i64) -> NewRepository {
         html_url: format!("https://github.com/{full_name}"),
         readme_preview: Some("README preview".to_string()),
     }
+}
+
+async fn authenticated_test_app_with_candidates(repositories: Vec<NewRepository>) -> axum::Router {
+    let config = Config::test();
+    let pool = connect(&config).await.unwrap();
+    let store = RepositoryStore::new(pool.clone());
+    sqlx::query(
+        r#"
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 1, 'octocat', 'gho_test_token')
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let service = DiscoveryService::new(store.clone());
+    let candidates = repositories
+        .into_iter()
+        .map(DiscoveryCandidate::from_new_repository)
+        .collect();
+    service
+        .enqueue_candidates("test-seed", "explicit test candidates", candidates)
+        .await
+        .unwrap();
+
+    let state = AppState {
+        repositories: store,
+        pool,
+        config,
+    };
+
+    Router::new()
+        .route("/api/health", get(|| async { "ok" }))
+        .nest("/api/auth", routes::auth::router())
+        .nest("/api/reel", routes::reel::router())
+        .nest("/api/saved", routes::saved::router())
+        .nest("/api/history", routes::history::router())
+        .nest("/api/settings", routes::settings::router())
+        .with_state(state)
+        .layer(CorsLayer::permissive())
+        .layer(TraceLayer::new_for_http())
 }
 
 struct FakeGitHubClient {
@@ -124,7 +171,7 @@ async fn records_history_events() {
 }
 
 #[tokio::test]
-async fn auth_state_starts_disconnected_and_dev_connect_sets_user() {
+async fn auth_state_starts_disconnected_and_dev_connect_route_is_gone() {
     let app = git_reel_server::build_test_app().await.unwrap();
 
     let response = app
@@ -148,7 +195,7 @@ async fn auth_state_starts_disconnected_and_dev_connect_sets_user() {
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -506,16 +553,7 @@ async fn claim_next_queued_repository_consumes_each_row_once() {
 
 #[tokio::test]
 async fn reel_next_save_and_skip_record_events() {
-    let app = git_reel_server::build_test_app().await.unwrap();
-
-    let connect = Request::post("/api/auth/dev-connect")
-        .header("content-type", "application/json")
-        .body(Body::from(r#"{"username":"local-dev"}"#))
-        .unwrap();
-    assert_eq!(
-        app.clone().oneshot(connect).await.unwrap().status(),
-        StatusCode::OK
-    );
+    let app = authenticated_test_app_with_candidates(vec![sample_repo("acme/reel", 501)]).await;
 
     let next = Request::post("/api/reel/next").body(Body::empty()).unwrap();
     let response = app.clone().oneshot(next).await.unwrap();
@@ -557,14 +595,8 @@ async fn reel_next_requires_auth_before_consuming_queue() {
     assert!(payload["repository"].is_null());
     assert_eq!(payload["empty_reason"], "auth_required");
 
-    let connect = Request::post("/api/auth/dev-connect")
-        .header("content-type", "application/json")
-        .body(Body::from(r#"{"username":"local-dev"}"#))
-        .unwrap();
-    assert_eq!(
-        app.clone().oneshot(connect).await.unwrap().status(),
-        StatusCode::OK
-    );
+    let app =
+        authenticated_test_app_with_candidates(vec![sample_repo("acme/oauth-reel", 502)]).await;
 
     let response = app
         .oneshot(Request::post("/api/reel/next").body(Body::empty()).unwrap())
@@ -574,21 +606,52 @@ async fn reel_next_requires_auth_before_consuming_queue() {
         .await
         .unwrap();
     let payload: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(payload["repository"]["full_name"], "rust-lang/rust");
+    assert_eq!(payload["repository"]["full_name"], "acme/oauth-reel");
+}
+
+#[tokio::test]
+async fn reel_next_rejects_tokenless_legacy_connection() {
+    let config = Config::test();
+    let pool = connect(&config).await.unwrap();
+    sqlx::query(
+        r#"
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 1, 'local-dev', NULL)
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let state = AppState {
+        repositories: RepositoryStore::new(pool.clone()),
+        pool,
+        config,
+    };
+    let app = Router::new()
+        .nest("/api/reel", routes::reel::router())
+        .with_state(state);
+
+    let response = app
+        .oneshot(Request::post("/api/reel/next").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    assert!(payload["repository"].is_null());
+    assert_eq!(payload["empty_reason"], "auth_required");
 }
 
 #[tokio::test]
 async fn reel_previous_walks_back_through_view_history() {
-    let app = git_reel_server::build_test_app().await.unwrap();
-
-    let connect = Request::post("/api/auth/dev-connect")
-        .header("content-type", "application/json")
-        .body(Body::from(r#"{"username":"local-dev"}"#))
-        .unwrap();
-    assert_eq!(
-        app.clone().oneshot(connect).await.unwrap().status(),
-        StatusCode::OK
-    );
+    let app = authenticated_test_app_with_candidates(vec![
+        sample_repo("acme/first-history", 503),
+        sample_repo("acme/second-history", 504),
+        sample_repo("acme/third-history", 505),
+    ])
+    .await;
 
     let first_response = app
         .clone()

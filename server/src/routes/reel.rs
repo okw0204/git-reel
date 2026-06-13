@@ -33,7 +33,6 @@ async fn current(State(state): State<AppState>) -> Result<Json<ReelResponse>, Ap
         }));
     }
     DiscoveryService::new(state.repositories.clone())
-        .with_github_client(state.github_client.clone())
         .ensure_candidates()
         .await?;
     let repository = state.repositories.next_queued_repository().await?;
@@ -58,7 +57,6 @@ async fn next(State(state): State<AppState>) -> Result<Json<ReelResponse>, ApiEr
         }));
     }
     DiscoveryService::new(state.repositories.clone())
-        .with_github_client(state.github_client.clone())
         .ensure_candidates()
         .await?;
     let repository = state.repositories.claim_next_queued_repository().await?;
@@ -129,10 +127,11 @@ async fn detail(
 }
 
 async fn auth_connected(state: &AppState) -> Result<bool, ApiError> {
-    let connected: Option<i64> =
-        sqlx::query_scalar("SELECT connected FROM auth_state WHERE id = 1")
-            .fetch_optional(&state.pool)
-            .await?;
+    let connected: Option<i64> = sqlx::query_scalar(
+        "SELECT connected FROM auth_state WHERE id = 1 AND access_token IS NOT NULL",
+    )
+    .fetch_optional(&state.pool)
+    .await?;
     Ok(connected.unwrap_or(0) == 1)
 }
 

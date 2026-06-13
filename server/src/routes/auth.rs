@@ -7,7 +7,7 @@ use axum::{
     extract::{Query, State},
     http::{header, HeaderMap, HeaderValue},
     response::{IntoResponse, Redirect, Response},
-    routing::{get, post},
+    routing::get,
     Json, Router,
 };
 use reqwest::Url;
@@ -20,7 +20,6 @@ const OAUTH_STATE_COOKIE: &str = "git_reel_oauth_state";
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/state", get(auth_state))
-        .route("/dev-connect", post(dev_connect))
         .route("/github/start", get(github_start))
         .route("/github/callback", get(github_callback))
 }
@@ -31,11 +30,6 @@ struct AuthStateResponse {
     username: Option<String>,
     oauth_configured: bool,
     oauth_start_url: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct DevConnectRequest {
-    username: String,
 }
 
 #[derive(Deserialize)]
@@ -314,42 +308,6 @@ async fn auth_state(State(state): State<AppState>) -> Result<Json<AuthStateRespo
         username: connected.then(|| row.and_then(|r| r.1)).flatten(),
         oauth_configured,
         oauth_start_url: oauth_configured.then(|| github_start_url(&state)),
-    }))
-}
-
-// 実 OAuth の代わりにローカル状態だけを接続済みにする、開発用の入口。
-async fn dev_connect(
-    State(state): State<AppState>,
-    Json(payload): Json<DevConnectRequest>,
-) -> Result<Json<AuthStateResponse>, ApiError> {
-    if github_oauth_configured(&state) {
-        // OAuth 設定済み環境では正規の GitHub 接続を使い、開発用経路の誤使用を避ける。
-        return Err(ApiError::OAuth(
-            "dev-connect is disabled when GitHub OAuth is configured".to_string(),
-        ));
-    }
-
-    sqlx::query(
-        r#"
-        INSERT INTO auth_state (id, connected, username, access_token, oauth_state)
-        VALUES (1, 1, ?, NULL, NULL)
-        ON CONFLICT(id) DO UPDATE SET
-          connected = 1,
-          username = excluded.username,
-          access_token = excluded.access_token,
-          oauth_state = excluded.oauth_state,
-          updated_at = CURRENT_TIMESTAMP
-        "#,
-    )
-    .bind(&payload.username)
-    .execute(&state.pool)
-    .await?;
-
-    Ok(Json(AuthStateResponse {
-        connected: true,
-        username: Some(payload.username),
-        oauth_configured: github_oauth_configured(&state),
-        oauth_start_url: github_oauth_configured(&state).then(|| github_start_url(&state)),
     }))
 }
 
@@ -697,78 +655,5 @@ mod tests {
             github_oauth_http_timeout(),
             crate::github::GITHUB_HTTP_TIMEOUT
         );
-    }
-
-    #[tokio::test]
-    async fn dev_connect_clears_existing_access_token() {
-        let config = Config::test();
-        let pool = connect(&config).await.unwrap();
-        sqlx::query(
-            r#"
-            INSERT INTO auth_state (id, connected, username, access_token)
-            VALUES (1, 1, 'github-user', 'github-token')
-            "#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        let state = AppState {
-            repositories: RepositoryStore::new(pool.clone()),
-            pool: pool.clone(),
-            config,
-        };
-
-        let _ = dev_connect(
-            State(state),
-            Json(DevConnectRequest {
-                username: "local-dev".to_string(),
-            }),
-        )
-        .await
-        .unwrap();
-
-        let token: Option<String> =
-            sqlx::query_scalar("SELECT access_token FROM auth_state WHERE id = 1")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-
-        assert!(token.is_none());
-    }
-
-    #[tokio::test]
-    async fn dev_connect_is_rejected_when_oauth_is_configured() {
-        let mut config = Config::test();
-        config.github_client_id = Some("test-client".to_string());
-        config.github_client_secret = Some("test-secret".to_string());
-        let pool = connect(&config).await.unwrap();
-        let state = AppState {
-            repositories: RepositoryStore::new(pool.clone()),
-            pool: pool.clone(),
-            config,
-        };
-
-        let result = dev_connect(
-            State(state),
-            Json(DevConnectRequest {
-                username: "local-dev".to_string(),
-            }),
-        )
-        .await;
-        let response = match result {
-            Ok(_) => panic!("dev-connect should be rejected when OAuth is configured"),
-            Err(error) => error.into_response(),
-        };
-
-        assert_eq!(
-            response.status(),
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR
-        );
-        let connected: Option<i64> =
-            sqlx::query_scalar("SELECT connected FROM auth_state WHERE id = 1")
-                .fetch_optional(&pool)
-                .await
-                .unwrap();
-        assert!(connected.is_none());
     }
 }
