@@ -580,7 +580,28 @@ async fn reel_next_save_and_skip_record_events() {
 
 #[tokio::test]
 async fn reel_next_requires_auth_before_consuming_queue() {
-    let app = git_reel_server::build_test_app().await.unwrap();
+    let config = Config::test();
+    let pool = connect(&config).await.unwrap();
+    let store = RepositoryStore::new(pool.clone());
+    DiscoveryService::new(store.clone())
+        .enqueue_candidates(
+            "test-seed",
+            "explicit test candidates",
+            vec![DiscoveryCandidate::from_new_repository(sample_repo(
+                "acme/oauth-reel",
+                502,
+            ))],
+        )
+        .await
+        .unwrap();
+    let state = AppState {
+        repositories: store,
+        pool: pool.clone(),
+        config,
+    };
+    let app = Router::new()
+        .nest("/api/reel", routes::reel::router())
+        .with_state(state);
 
     let response = app
         .clone()
@@ -595,8 +616,15 @@ async fn reel_next_requires_auth_before_consuming_queue() {
     assert!(payload["repository"].is_null());
     assert_eq!(payload["empty_reason"], "auth_required");
 
-    let app =
-        authenticated_test_app_with_candidates(vec![sample_repo("acme/oauth-reel", 502)]).await;
+    sqlx::query(
+        r#"
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 1, 'octocat', 'gho_test_token')
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let response = app
         .oneshot(Request::post("/api/reel/next").body(Body::empty()).unwrap())

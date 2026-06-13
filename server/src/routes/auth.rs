@@ -296,12 +296,10 @@ async fn auth_state(State(state): State<AppState>) -> Result<Json<AuthStateRespo
             .fetch_optional(&state.pool)
             .await?;
     let oauth_configured = github_oauth_configured(&state);
-    // OAuth 設定済み環境では token が補充にも必要なので、古い dev-connect 状態だけでは接続済みにしない。
+    // GitHub 接続は候補補充にも token が必要なので、古い dev-connect 状態だけでは接続済みにしない。
     let connected = row
         .as_ref()
-        .map(|(connected, _, access_token)| {
-            *connected == 1 && (!oauth_configured || access_token.is_some())
-        })
+        .map(|(connected, _, access_token)| *connected == 1 && access_token.is_some())
         .unwrap_or(false);
     Ok(Json(AuthStateResponse {
         connected,
@@ -367,10 +365,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auth_state_ignores_tokenless_dev_connection_when_oauth_is_configured() {
-        let mut config = Config::test();
-        config.github_client_id = Some("test-client".to_string());
-        config.github_client_secret = Some("test-secret".to_string());
+    async fn auth_state_ignores_tokenless_legacy_connection() {
+        let config = Config::test();
         let pool = connect(&config).await.unwrap();
         sqlx::query(
             r#"
@@ -391,11 +387,8 @@ mod tests {
 
         assert!(!response.connected);
         assert!(response.username.is_none());
-        assert!(response.oauth_configured);
-        assert_eq!(
-            response.oauth_start_url.as_deref(),
-            Some("http://127.0.0.1:4317/api/auth/github/start")
-        );
+        assert!(!response.oauth_configured);
+        assert!(response.oauth_start_url.is_none());
     }
 
     #[tokio::test]
