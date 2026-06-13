@@ -2,6 +2,11 @@
 
 UI 表示文言は日本語を基本とし、GitHub 由来のリポジトリ名・説明・README・topic は元の言語を保つ。
 
+# 開発運用
+
+- 機能変更を伴わない軽微な修正（ドキュメント変更のみなど）を除き、開発では superpowers を利用する。
+- ドキュメントを `docs/` に作成する段階から、作業用ブランチを作成する。
+
 # 開発コマンド
 
 - 依存関係はルートで `npm install`。root の npm workspace は `web` だけで、Rust サーバーは Cargo workspace ではない。
