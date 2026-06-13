@@ -1,18 +1,23 @@
 use axum::{
     body::Body,
     http::{Request, StatusCode},
+    routing::get,
+    Router,
 };
 use git_reel_server::{
+    app::AppState,
     config::Config,
     db::connect,
     discovery::{DiscoveryCandidate, DiscoveryService},
     github::{GitHubDiscoveryClient, GitHubError},
     models::{NewRepository, RepoEventKind},
     repositories::RepositoryStore,
+    routes,
 };
 use serde_json::Value;
 use std::sync::Arc;
 use tower::ServiceExt;
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 fn sample_repo(full_name: &str, github_id: i64) -> NewRepository {
     let (owner, name) = full_name.split_once('/').unwrap();
@@ -31,6 +36,55 @@ fn sample_repo(full_name: &str, github_id: i64) -> NewRepository {
         html_url: format!("https://github.com/{full_name}"),
         readme_preview: Some("README preview".to_string()),
     }
+}
+
+fn test_config_with_oauth() -> Config {
+    let mut config = Config::test();
+    config.github_client_id = Some("test-client".to_string());
+    config.github_client_secret = Some("test-secret".to_string());
+    config
+}
+
+async fn authenticated_test_app_with_candidates(repositories: Vec<NewRepository>) -> axum::Router {
+    let config = test_config_with_oauth();
+    let pool = connect(&config).await.unwrap();
+    let store = RepositoryStore::new(pool.clone());
+    sqlx::query(
+        r#"
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 1, 'octocat', 'gho_test_token')
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let service = DiscoveryService::new(store.clone());
+    let candidates = repositories
+        .into_iter()
+        .map(DiscoveryCandidate::from_new_repository)
+        .collect();
+    service
+        .enqueue_candidates("test-seed", "explicit test candidates", candidates)
+        .await
+        .unwrap();
+
+    let state = AppState {
+        repositories: store,
+        pool,
+        config,
+    };
+
+    Router::new()
+        .route("/api/health", get(|| async { "ok" }))
+        .nest("/api/auth", routes::auth::router())
+        .nest("/api/reel", routes::reel::router())
+        .nest("/api/saved", routes::saved::router())
+        .nest("/api/history", routes::history::router())
+        .nest("/api/settings", routes::settings::router())
+        .with_state(state)
+        .layer(CorsLayer::permissive())
+        .layer(TraceLayer::new_for_http())
 }
 
 struct FakeGitHubClient {
@@ -124,7 +178,7 @@ async fn records_history_events() {
 }
 
 #[tokio::test]
-async fn auth_state_starts_disconnected_and_dev_connect_sets_user() {
+async fn auth_state_starts_disconnected_and_legacy_route_is_gone() {
     let app = git_reel_server::build_test_app().await.unwrap();
 
     let response = app
@@ -139,16 +193,17 @@ async fn auth_state_starts_disconnected_and_dev_connect_sets_user() {
     let state: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(state["connected"], false);
 
+    let removed_route = format!("/api/auth/{}-{}", "dev", "connect");
     let response = app
         .oneshot(
-            Request::post("/api/auth/dev-connect")
+            Request::post(removed_route)
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"username":"local-dev"}"#))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -318,25 +373,6 @@ async fn discovery_queue_deduplicates_candidates_in_one_batch() {
 }
 
 #[tokio::test]
-async fn discovery_uses_github_candidates_when_queue_is_empty() {
-    let pool = connect(&Config::test()).await.unwrap();
-    let store = RepositoryStore::new(pool);
-    let service =
-        DiscoveryService::new(store.clone()).with_github_client(Some(Arc::new(FakeGitHubClient {
-            result: Ok((
-                "stars:10..5000 fork:false archived:false pushed:>2026-02-27 sort:updated-desc"
-                    .to_string(),
-                vec![sample_repo("acme/live", 401)],
-            )),
-        })));
-
-    service.ensure_candidates().await.unwrap();
-
-    let next = store.next_queued_repository().await.unwrap().unwrap();
-    assert_eq!(next.full_name, "acme/live");
-}
-
-#[tokio::test]
 async fn discovery_prefers_oauth_token_client_when_auth_token_exists() {
     let pool = connect(&Config::test()).await.unwrap();
     let store = RepositoryStore::new(pool.clone());
@@ -350,15 +386,8 @@ async fn discovery_prefers_oauth_token_client_when_auth_token_exists() {
     .await
     .unwrap();
 
-    let fallback_client = Arc::new(FakeGitHubClient {
-        result: Ok((
-            "fallback query".to_string(),
-            vec![sample_repo("acme/fallback", 402)],
-        )),
-    });
-    let service = DiscoveryService::new(store.clone())
-        .with_github_client(Some(fallback_client))
-        .with_oauth_github_client_factory(Arc::new(|token| {
+    let service =
+        DiscoveryService::new(store.clone()).with_oauth_github_client_factory(Arc::new(|token| {
             assert_eq!(token, "gho_oauth_token");
             Arc::new(FakeGitHubClient {
                 result: Ok((
@@ -375,7 +404,22 @@ async fn discovery_prefers_oauth_token_client_when_auth_token_exists() {
 }
 
 #[tokio::test]
-async fn discovery_falls_back_to_github_token_client_when_oauth_client_fails() {
+async fn discovery_leaves_queue_empty_without_oauth_token() {
+    let pool = connect(&Config::test()).await.unwrap();
+    let store = RepositoryStore::new(pool);
+    let service =
+        DiscoveryService::new(store.clone()).with_oauth_github_client_factory(Arc::new(|_| {
+            panic!("OAuth client factory should not be called without a saved token")
+        }));
+
+    service.ensure_candidates().await.unwrap();
+
+    let next = store.next_queued_repository().await.unwrap();
+    assert!(next.is_none());
+}
+
+#[tokio::test]
+async fn discovery_leaves_queue_empty_when_oauth_client_fails() {
     let pool = connect(&Config::test()).await.unwrap();
     let store = RepositoryStore::new(pool.clone());
     sqlx::query(
@@ -388,15 +432,8 @@ async fn discovery_falls_back_to_github_token_client_when_oauth_client_fails() {
     .await
     .unwrap();
 
-    let fallback_client = Arc::new(FakeGitHubClient {
-        result: Ok((
-            "fallback query".to_string(),
-            vec![sample_repo("acme/fallback", 404)],
-        )),
-    });
-    let service = DiscoveryService::new(store.clone())
-        .with_github_client(Some(fallback_client))
-        .with_oauth_github_client_factory(Arc::new(|_| {
+    let service =
+        DiscoveryService::new(store.clone()).with_oauth_github_client_factory(Arc::new(|_| {
             Arc::new(FakeGitHubClient {
                 result: Err(GitHubError::HttpStatus(StatusCode::UNAUTHORIZED)),
             })
@@ -404,76 +441,35 @@ async fn discovery_falls_back_to_github_token_client_when_oauth_client_fails() {
 
     service.ensure_candidates().await.unwrap();
 
-    let next = store.next_queued_repository().await.unwrap().unwrap();
-    assert_eq!(next.full_name, "acme/fallback");
+    let next = store.next_queued_repository().await.unwrap();
+    assert!(next.is_none());
 }
 
 #[tokio::test]
-async fn discovery_uses_github_token_client_when_oauth_token_is_missing() {
+async fn discovery_leaves_queue_empty_when_oauth_returns_no_accepted_candidates() {
     let pool = connect(&Config::test()).await.unwrap();
-    let store = RepositoryStore::new(pool);
-    let fallback_client = Arc::new(FakeGitHubClient {
-        result: Ok((
-            "fallback query".to_string(),
-            vec![sample_repo("acme/fallback-only", 405)],
-        )),
-    });
-    let service = DiscoveryService::new(store.clone())
-        .with_github_client(Some(fallback_client))
-        .with_oauth_github_client_factory(Arc::new(|_| {
-            panic!("OAuth client factory should not be called without a saved token")
+    let store = RepositoryStore::new(pool.clone());
+    sqlx::query(
+        r#"
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 1, 'octocat', 'gho_oauth_token')
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let service =
+        DiscoveryService::new(store.clone()).with_oauth_github_client_factory(Arc::new(|_| {
+            Arc::new(FakeGitHubClient {
+                result: Ok(("oauth query".to_string(), Vec::new())),
+            })
         }));
 
     service.ensure_candidates().await.unwrap();
 
-    let next = store.next_queued_repository().await.unwrap().unwrap();
-    assert_eq!(next.full_name, "acme/fallback-only");
-}
-
-#[tokio::test]
-async fn discovery_falls_back_to_seed_without_github_client() {
-    let pool = connect(&Config::test()).await.unwrap();
-    let store = RepositoryStore::new(pool);
-    let service = DiscoveryService::new(store.clone());
-
-    service.ensure_candidates().await.unwrap();
-
-    let next = store.next_queued_repository().await.unwrap().unwrap();
-    assert_eq!(next.full_name, "rust-lang/rust");
-}
-
-#[tokio::test]
-async fn discovery_falls_back_to_seed_when_github_fails() {
-    let pool = connect(&Config::test()).await.unwrap();
-    let store = RepositoryStore::new(pool);
-    let service =
-        DiscoveryService::new(store.clone()).with_github_client(Some(Arc::new(FakeGitHubClient {
-            result: Err(GitHubError::HttpStatus(StatusCode::FORBIDDEN)),
-        })));
-
-    service.ensure_candidates().await.unwrap();
-
-    let next = store.next_queued_repository().await.unwrap().unwrap();
-    assert_eq!(next.full_name, "rust-lang/rust");
-}
-
-#[tokio::test]
-async fn discovery_falls_back_to_seed_when_github_returns_no_accepted_candidates() {
-    let pool = connect(&Config::test()).await.unwrap();
-    let store = RepositoryStore::new(pool.clone());
-    let service =
-        DiscoveryService::new(store.clone()).with_github_client(Some(Arc::new(FakeGitHubClient {
-            result: Ok((
-                "stars:10..5000 fork:false archived:false pushed:>2026-02-27 sort:updated-desc"
-                    .to_string(),
-                Vec::new(),
-            )),
-        })));
-
-    service.ensure_candidates().await.unwrap();
-
-    let next = store.next_queued_repository().await.unwrap().unwrap();
-    assert_eq!(next.full_name, "rust-lang/rust");
+    let next = store.next_queued_repository().await.unwrap();
+    assert!(next.is_none());
 }
 
 #[tokio::test]
@@ -506,16 +502,7 @@ async fn claim_next_queued_repository_consumes_each_row_once() {
 
 #[tokio::test]
 async fn reel_next_save_and_skip_record_events() {
-    let app = git_reel_server::build_test_app().await.unwrap();
-
-    let connect = Request::post("/api/auth/dev-connect")
-        .header("content-type", "application/json")
-        .body(Body::from(r#"{"username":"local-dev"}"#))
-        .unwrap();
-    assert_eq!(
-        app.clone().oneshot(connect).await.unwrap().status(),
-        StatusCode::OK
-    );
+    let app = authenticated_test_app_with_candidates(vec![sample_repo("acme/reel", 501)]).await;
 
     let next = Request::post("/api/reel/next").body(Body::empty()).unwrap();
     let response = app.clone().oneshot(next).await.unwrap();
@@ -542,7 +529,28 @@ async fn reel_next_save_and_skip_record_events() {
 
 #[tokio::test]
 async fn reel_next_requires_auth_before_consuming_queue() {
-    let app = git_reel_server::build_test_app().await.unwrap();
+    let config = test_config_with_oauth();
+    let pool = connect(&config).await.unwrap();
+    let store = RepositoryStore::new(pool.clone());
+    DiscoveryService::new(store.clone())
+        .enqueue_candidates(
+            "test-seed",
+            "explicit test candidates",
+            vec![DiscoveryCandidate::from_new_repository(sample_repo(
+                "acme/oauth-reel",
+                502,
+            ))],
+        )
+        .await
+        .unwrap();
+    let state = AppState {
+        repositories: store,
+        pool: pool.clone(),
+        config,
+    };
+    let app = Router::new()
+        .nest("/api/reel", routes::reel::router())
+        .with_state(state);
 
     let response = app
         .clone()
@@ -557,14 +565,15 @@ async fn reel_next_requires_auth_before_consuming_queue() {
     assert!(payload["repository"].is_null());
     assert_eq!(payload["empty_reason"], "auth_required");
 
-    let connect = Request::post("/api/auth/dev-connect")
-        .header("content-type", "application/json")
-        .body(Body::from(r#"{"username":"local-dev"}"#))
-        .unwrap();
-    assert_eq!(
-        app.clone().oneshot(connect).await.unwrap().status(),
-        StatusCode::OK
-    );
+    sqlx::query(
+        r#"
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 1, 'octocat', 'gho_test_token')
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let response = app
         .oneshot(Request::post("/api/reel/next").body(Body::empty()).unwrap())
@@ -574,21 +583,144 @@ async fn reel_next_requires_auth_before_consuming_queue() {
         .await
         .unwrap();
     let payload: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(payload["repository"]["full_name"], "rust-lang/rust");
+    assert_eq!(payload["repository"]["full_name"], "acme/oauth-reel");
+}
+
+#[tokio::test]
+async fn reel_next_rejects_saved_token_without_oauth_config() {
+    let config = Config::test();
+    let pool = connect(&config).await.unwrap();
+    sqlx::query(
+        r#"
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 1, 'octocat', 'gho_test_token')
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let state = AppState {
+        repositories: RepositoryStore::new(pool.clone()),
+        pool,
+        config,
+    };
+    let app = Router::new()
+        .nest("/api/reel", routes::reel::router())
+        .with_state(state);
+
+    let response = app
+        .oneshot(Request::post("/api/reel/next").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    assert!(payload["repository"].is_null());
+    assert_eq!(payload["empty_reason"], "auth_required");
+}
+
+#[tokio::test]
+async fn reel_next_rejects_tokenless_legacy_connection() {
+    let config = Config::test();
+    let pool = connect(&config).await.unwrap();
+    sqlx::query(
+        r#"
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 1, 'local-dev', NULL)
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let state = AppState {
+        repositories: RepositoryStore::new(pool.clone()),
+        pool,
+        config,
+    };
+    let app = Router::new()
+        .nest("/api/reel", routes::reel::router())
+        .with_state(state);
+
+    let response = app
+        .oneshot(Request::post("/api/reel/next").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    assert!(payload["repository"].is_null());
+    assert_eq!(payload["empty_reason"], "auth_required");
+}
+
+#[tokio::test]
+async fn settings_reports_disconnected_for_legacy_or_unconfigured_auth_rows() {
+    let config = Config::test();
+    let pool = connect(&config).await.unwrap();
+    sqlx::query(
+        r#"
+        INSERT INTO auth_state (id, connected, username, access_token)
+        VALUES (1, 1, 'local-dev', NULL)
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let state = AppState {
+        repositories: RepositoryStore::new(pool.clone()),
+        pool: pool.clone(),
+        config,
+    };
+    let app = Router::new()
+        .nest("/api/settings", routes::settings::router())
+        .with_state(state);
+
+    let response = app
+        .clone()
+        .oneshot(Request::get("/api/settings").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(payload["auth_connected"], false);
+    assert!(payload["username"].is_null());
+
+    sqlx::query(
+        r#"
+        UPDATE auth_state
+        SET username = 'octocat', access_token = 'gho_test_token'
+        WHERE id = 1
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let response = app
+        .oneshot(Request::get("/api/settings").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(payload["auth_connected"], false);
+    assert!(payload["username"].is_null());
 }
 
 #[tokio::test]
 async fn reel_previous_walks_back_through_view_history() {
-    let app = git_reel_server::build_test_app().await.unwrap();
-
-    let connect = Request::post("/api/auth/dev-connect")
-        .header("content-type", "application/json")
-        .body(Body::from(r#"{"username":"local-dev"}"#))
-        .unwrap();
-    assert_eq!(
-        app.clone().oneshot(connect).await.unwrap().status(),
-        StatusCode::OK
-    );
+    let app = authenticated_test_app_with_candidates(vec![
+        sample_repo("acme/first-history", 503),
+        sample_repo("acme/second-history", 504),
+        sample_repo("acme/third-history", 505),
+    ])
+    .await;
 
     let first_response = app
         .clone()

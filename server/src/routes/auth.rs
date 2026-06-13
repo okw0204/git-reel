@@ -7,7 +7,7 @@ use axum::{
     extract::{Query, State},
     http::{header, HeaderMap, HeaderValue},
     response::{IntoResponse, Redirect, Response},
-    routing::{get, post},
+    routing::get,
     Json, Router,
 };
 use reqwest::Url;
@@ -20,7 +20,6 @@ const OAUTH_STATE_COOKIE: &str = "git_reel_oauth_state";
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/state", get(auth_state))
-        .route("/dev-connect", post(dev_connect))
         .route("/github/start", get(github_start))
         .route("/github/callback", get(github_callback))
 }
@@ -31,11 +30,6 @@ struct AuthStateResponse {
     username: Option<String>,
     oauth_configured: bool,
     oauth_start_url: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct DevConnectRequest {
-    username: String,
 }
 
 #[derive(Deserialize)]
@@ -302,11 +296,11 @@ async fn auth_state(State(state): State<AppState>) -> Result<Json<AuthStateRespo
             .fetch_optional(&state.pool)
             .await?;
     let oauth_configured = github_oauth_configured(&state);
-    // OAuth 設定済み環境では token が補充にも必要なので、古い dev-connect 状態だけでは接続済みにしない。
+    // GitHub 接続は候補補充にも token が必要なので、token のない古い接続状態は接続済みにしない。
     let connected = row
         .as_ref()
         .map(|(connected, _, access_token)| {
-            *connected == 1 && (!oauth_configured || access_token.is_some())
+            oauth_configured && *connected == 1 && access_token.is_some()
         })
         .unwrap_or(false);
     Ok(Json(AuthStateResponse {
@@ -314,42 +308,6 @@ async fn auth_state(State(state): State<AppState>) -> Result<Json<AuthStateRespo
         username: connected.then(|| row.and_then(|r| r.1)).flatten(),
         oauth_configured,
         oauth_start_url: oauth_configured.then(|| github_start_url(&state)),
-    }))
-}
-
-// 実 OAuth の代わりにローカル状態だけを接続済みにする、開発用の入口。
-async fn dev_connect(
-    State(state): State<AppState>,
-    Json(payload): Json<DevConnectRequest>,
-) -> Result<Json<AuthStateResponse>, ApiError> {
-    if github_oauth_configured(&state) {
-        // OAuth 設定済み環境では正規の GitHub 接続を使い、開発用経路の誤使用を避ける。
-        return Err(ApiError::OAuth(
-            "dev-connect is disabled when GitHub OAuth is configured".to_string(),
-        ));
-    }
-
-    sqlx::query(
-        r#"
-        INSERT INTO auth_state (id, connected, username, access_token, oauth_state)
-        VALUES (1, 1, ?, NULL, NULL)
-        ON CONFLICT(id) DO UPDATE SET
-          connected = 1,
-          username = excluded.username,
-          access_token = excluded.access_token,
-          oauth_state = excluded.oauth_state,
-          updated_at = CURRENT_TIMESTAMP
-        "#,
-    )
-    .bind(&payload.username)
-    .execute(&state.pool)
-    .await?;
-
-    Ok(Json(AuthStateResponse {
-        connected: true,
-        username: Some(payload.username),
-        oauth_configured: github_oauth_configured(&state),
-        oauth_start_url: github_oauth_configured(&state).then(|| github_start_url(&state)),
     }))
 }
 
@@ -373,7 +331,6 @@ mod tests {
             repositories: RepositoryStore::new(pool.clone()),
             pool,
             config,
-            github_client: None,
         };
 
         let response = github_start(State(state)).await.unwrap().into_response();
@@ -399,7 +356,6 @@ mod tests {
             repositories: RepositoryStore::new(pool.clone()),
             pool,
             config,
-            github_client: None,
         };
 
         let Json(response) = auth_state(State(state)).await.unwrap();
@@ -411,10 +367,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auth_state_ignores_tokenless_dev_connection_when_oauth_is_configured() {
-        let mut config = Config::test();
-        config.github_client_id = Some("test-client".to_string());
-        config.github_client_secret = Some("test-secret".to_string());
+    async fn auth_state_ignores_tokenless_legacy_connection() {
+        let config = Config::test();
         let pool = connect(&config).await.unwrap();
         sqlx::query(
             r#"
@@ -429,18 +383,41 @@ mod tests {
             repositories: RepositoryStore::new(pool.clone()),
             pool,
             config,
-            github_client: None,
         };
 
         let Json(response) = auth_state(State(state)).await.unwrap();
 
         assert!(!response.connected);
         assert!(response.username.is_none());
-        assert!(response.oauth_configured);
-        assert_eq!(
-            response.oauth_start_url.as_deref(),
-            Some("http://127.0.0.1:4317/api/auth/github/start")
-        );
+        assert!(!response.oauth_configured);
+        assert!(response.oauth_start_url.is_none());
+    }
+
+    #[tokio::test]
+    async fn auth_state_ignores_saved_token_without_oauth_config() {
+        let config = Config::test();
+        let pool = connect(&config).await.unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO auth_state (id, connected, username, access_token)
+            VALUES (1, 1, 'octocat', 'gho_test_token')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let state = AppState {
+            repositories: RepositoryStore::new(pool.clone()),
+            pool,
+            config,
+        };
+
+        let Json(response) = auth_state(State(state)).await.unwrap();
+
+        assert!(!response.connected);
+        assert!(response.username.is_none());
+        assert!(!response.oauth_configured);
+        assert!(response.oauth_start_url.is_none());
     }
 
     #[tokio::test]
@@ -454,7 +431,6 @@ mod tests {
             repositories: RepositoryStore::new(pool.clone()),
             pool,
             config,
-            github_client: None,
         };
 
         let response = github_start(State(state)).await.unwrap().into_response();
@@ -475,7 +451,6 @@ mod tests {
             repositories: RepositoryStore::new(pool.clone()),
             pool: pool.clone(),
             config,
-            github_client: None,
         };
 
         let response = github_start(State(state)).await.unwrap().into_response();
@@ -499,7 +474,6 @@ mod tests {
             repositories: RepositoryStore::new(pool.clone()),
             pool: pool.clone(),
             config,
-            github_client: None,
         };
 
         let response = github_start(State(state)).await.unwrap().into_response();
@@ -529,7 +503,6 @@ mod tests {
             repositories: RepositoryStore::new(pool.clone()),
             pool: pool.clone(),
             config,
-            github_client: None,
         };
 
         let first_response = github_start(State(state.clone()))
@@ -585,7 +558,6 @@ mod tests {
             repositories: RepositoryStore::new(pool.clone()),
             pool,
             config,
-            github_client: None,
         };
 
         let response = github_callback(
@@ -621,7 +593,6 @@ mod tests {
             repositories: RepositoryStore::new(pool.clone()),
             pool: pool.clone(),
             config,
-            github_client: None,
         };
 
         let response = github_callback(
@@ -663,7 +634,6 @@ mod tests {
             repositories: RepositoryStore::new(pool.clone()),
             pool: pool.clone(),
             config,
-            github_client: None,
         };
 
         let _ = github_callback(
@@ -707,80 +677,5 @@ mod tests {
             github_oauth_http_timeout(),
             crate::github::GITHUB_HTTP_TIMEOUT
         );
-    }
-
-    #[tokio::test]
-    async fn dev_connect_clears_existing_access_token() {
-        let config = Config::test();
-        let pool = connect(&config).await.unwrap();
-        sqlx::query(
-            r#"
-            INSERT INTO auth_state (id, connected, username, access_token)
-            VALUES (1, 1, 'github-user', 'github-token')
-            "#,
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        let state = AppState {
-            repositories: RepositoryStore::new(pool.clone()),
-            pool: pool.clone(),
-            config,
-            github_client: None,
-        };
-
-        let _ = dev_connect(
-            State(state),
-            Json(DevConnectRequest {
-                username: "local-dev".to_string(),
-            }),
-        )
-        .await
-        .unwrap();
-
-        let token: Option<String> =
-            sqlx::query_scalar("SELECT access_token FROM auth_state WHERE id = 1")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-
-        assert!(token.is_none());
-    }
-
-    #[tokio::test]
-    async fn dev_connect_is_rejected_when_oauth_is_configured() {
-        let mut config = Config::test();
-        config.github_client_id = Some("test-client".to_string());
-        config.github_client_secret = Some("test-secret".to_string());
-        let pool = connect(&config).await.unwrap();
-        let state = AppState {
-            repositories: RepositoryStore::new(pool.clone()),
-            pool: pool.clone(),
-            config,
-            github_client: None,
-        };
-
-        let result = dev_connect(
-            State(state),
-            Json(DevConnectRequest {
-                username: "local-dev".to_string(),
-            }),
-        )
-        .await;
-        let response = match result {
-            Ok(_) => panic!("dev-connect should be rejected when OAuth is configured"),
-            Err(error) => error.into_response(),
-        };
-
-        assert_eq!(
-            response.status(),
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR
-        );
-        let connected: Option<i64> =
-            sqlx::query_scalar("SELECT connected FROM auth_state WHERE id = 1")
-                .fetch_optional(&pool)
-                .await
-                .unwrap();
-        assert!(connected.is_none());
     }
 }
