@@ -33,7 +33,7 @@ export default function App() {
           <p>ローカルに保存された GitHub 接続情報を読み込んでいます。</p>
         </section>
       ) : null}
-      {view === "reel" && authLoaded ? <ReelScreen auth={auth} onAuthChange={setAuth} /> : null}
+      {view === "reel" && authLoaded ? <ReelScreen auth={auth} /> : null}
       {view === "saved" ? <SavedScreen /> : null}
       {view === "history" ? <HistoryScreen /> : null}
       {view === "settings" ? <SettingsScreen /> : null}

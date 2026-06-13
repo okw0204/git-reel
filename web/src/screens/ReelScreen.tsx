@@ -8,7 +8,6 @@ import type { AuthState, ReelResponse, Repository, RepositoryDetail } from "../t
 
 type ReelScreenProps = {
   auth: AuthState;
-  onAuthChange: (auth: AuthState) => void;
 };
 
 export function ReelScreen({ auth }: ReelScreenProps) {

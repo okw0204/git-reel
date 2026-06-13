@@ -97,7 +97,14 @@ describe("App", () => {
   test("接続済みのリール表示では候補を進めず現在の候補を表示する", async () => {
     const fetch = vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
-      if (path === "/api/auth/state") return Response.json({ connected: true, username: "local-dev", oauth_configured: false });
+      if (path === "/api/auth/state") {
+        return Response.json({
+          connected: true,
+          username: "octocat",
+          oauth_configured: true,
+          oauth_start_url: "http://127.0.0.1:4317/api/auth/github/start"
+        });
+      }
       if (path === "/api/reel/current") return Response.json({ repository: repo, empty_reason: null });
       if (path === "/api/reel/next") {
         return Response.json({ repository: { ...repo, id: 2, full_name: "next/repo" }, empty_reason: null });
