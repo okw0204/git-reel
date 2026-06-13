@@ -96,8 +96,12 @@ impl DiscoveryService {
                 Ok(Some(accepted))
             }
             Err(error) => {
-                // GitHub 側の一時失敗でリール全体を止めず、次の補充元へフォールバックする。
-                tracing::warn!(?error, strategy, "github discovery failed; trying fallback");
+                // GitHub 側の一時失敗でリール全体を止めず、今回はキューを空のままにする。
+                tracing::warn!(
+                    ?error,
+                    strategy,
+                    "github discovery failed; leaving queue empty"
+                );
                 Ok(None)
             }
         }

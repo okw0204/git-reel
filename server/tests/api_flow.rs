@@ -378,8 +378,8 @@ async fn discovery_prefers_oauth_token_client_when_auth_token_exists() {
     .await
     .unwrap();
 
-    let service = DiscoveryService::new(store.clone()).with_oauth_github_client_factory(Arc::new(
-        |token| {
+    let service =
+        DiscoveryService::new(store.clone()).with_oauth_github_client_factory(Arc::new(|token| {
             assert_eq!(token, "gho_oauth_token");
             Arc::new(FakeGitHubClient {
                 result: Ok((
@@ -387,8 +387,7 @@ async fn discovery_prefers_oauth_token_client_when_auth_token_exists() {
                     vec![sample_repo("acme/oauth", 403)],
                 )),
             })
-        },
-    ));
+        }));
 
     service.ensure_candidates().await.unwrap();
 
@@ -400,9 +399,10 @@ async fn discovery_prefers_oauth_token_client_when_auth_token_exists() {
 async fn discovery_leaves_queue_empty_without_oauth_token() {
     let pool = connect(&Config::test()).await.unwrap();
     let store = RepositoryStore::new(pool);
-    let service = DiscoveryService::new(store.clone()).with_oauth_github_client_factory(Arc::new(
-        |_| panic!("OAuth client factory should not be called without a saved token"),
-    ));
+    let service =
+        DiscoveryService::new(store.clone()).with_oauth_github_client_factory(Arc::new(|_| {
+            panic!("OAuth client factory should not be called without a saved token")
+        }));
 
     service.ensure_candidates().await.unwrap();
 
@@ -424,13 +424,12 @@ async fn discovery_leaves_queue_empty_when_oauth_client_fails() {
     .await
     .unwrap();
 
-    let service = DiscoveryService::new(store.clone()).with_oauth_github_client_factory(Arc::new(
-        |_| {
+    let service =
+        DiscoveryService::new(store.clone()).with_oauth_github_client_factory(Arc::new(|_| {
             Arc::new(FakeGitHubClient {
                 result: Err(GitHubError::HttpStatus(StatusCode::UNAUTHORIZED)),
             })
-        },
-    ));
+        }));
 
     service.ensure_candidates().await.unwrap();
 
@@ -452,13 +451,12 @@ async fn discovery_leaves_queue_empty_when_oauth_returns_no_accepted_candidates(
     .await
     .unwrap();
 
-    let service = DiscoveryService::new(store.clone()).with_oauth_github_client_factory(Arc::new(
-        |_| {
+    let service =
+        DiscoveryService::new(store.clone()).with_oauth_github_client_factory(Arc::new(|_| {
             Arc::new(FakeGitHubClient {
                 result: Ok(("oauth query".to_string(), Vec::new())),
             })
-        },
-    ));
+        }));
 
     service.ensure_candidates().await.unwrap();
 
