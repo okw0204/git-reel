@@ -1,19 +1,10 @@
 import { expect, test } from "@playwright/test";
 
-// OAuth 未設定のローカル環境で、開発用接続から保存・スキップ・履歴確認まで MVP の最短フローを通す。
-test("user can connect, browse, save, skip, and inspect local views", async ({ page }) => {
+test("OAuth 未設定時は設定案内を表示する", async ({ page }) => {
   await page.goto("/");
+
   await expect(page.getByText("GitHubに接続するとリールを開始できます")).toBeVisible();
-
-  await page.getByRole("button", { name: "開発用に接続" }).click();
-  await expect(page.getByRole("heading", { name: /.+\/.+/ })).toBeVisible();
-
-  await page.getByRole("button", { name: "保存", exact: true }).click();
-  await page.getByRole("button", { name: "スキップ" }).click();
-
-  await page.getByRole("button", { name: "保存", exact: true }).click();
-  await expect(page.getByRole("heading", { name: /rust-lang\/rust|tauri-apps\/tauri|sqlite\/sqlite/ })).toBeVisible();
-
-  await page.getByRole("button", { name: "履歴" }).click();
-  await expect(page.getByText(/saved|skipped|viewed/).first()).toBeVisible();
+  await expect(page.getByText("リールを開始するには GitHub OAuth の設定が必要です。GITHUB_CLIENT_ID と GITHUB_CLIENT_SECRET を設定してサーバーを起動してください。")).toBeVisible();
+  await expect(page.getByRole("button", { name: "開発用に接続" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "GitHubに接続" })).toHaveCount(0);
 });
