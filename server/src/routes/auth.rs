@@ -373,7 +373,6 @@ mod tests {
             repositories: RepositoryStore::new(pool.clone()),
             pool,
             config,
-            github_client: None,
         };
 
         let response = github_start(State(state)).await.unwrap().into_response();
@@ -399,7 +398,6 @@ mod tests {
             repositories: RepositoryStore::new(pool.clone()),
             pool,
             config,
-            github_client: None,
         };
 
         let Json(response) = auth_state(State(state)).await.unwrap();
@@ -429,7 +427,6 @@ mod tests {
             repositories: RepositoryStore::new(pool.clone()),
             pool,
             config,
-            github_client: None,
         };
 
         let Json(response) = auth_state(State(state)).await.unwrap();
@@ -454,7 +451,6 @@ mod tests {
             repositories: RepositoryStore::new(pool.clone()),
             pool,
             config,
-            github_client: None,
         };
 
         let response = github_start(State(state)).await.unwrap().into_response();
@@ -475,7 +471,6 @@ mod tests {
             repositories: RepositoryStore::new(pool.clone()),
             pool: pool.clone(),
             config,
-            github_client: None,
         };
 
         let response = github_start(State(state)).await.unwrap().into_response();
@@ -499,7 +494,6 @@ mod tests {
             repositories: RepositoryStore::new(pool.clone()),
             pool: pool.clone(),
             config,
-            github_client: None,
         };
 
         let response = github_start(State(state)).await.unwrap().into_response();
@@ -529,7 +523,6 @@ mod tests {
             repositories: RepositoryStore::new(pool.clone()),
             pool: pool.clone(),
             config,
-            github_client: None,
         };
 
         let first_response = github_start(State(state.clone()))
@@ -585,7 +578,6 @@ mod tests {
             repositories: RepositoryStore::new(pool.clone()),
             pool,
             config,
-            github_client: None,
         };
 
         let response = github_callback(
@@ -621,7 +613,6 @@ mod tests {
             repositories: RepositoryStore::new(pool.clone()),
             pool: pool.clone(),
             config,
-            github_client: None,
         };
 
         let response = github_callback(
@@ -663,7 +654,6 @@ mod tests {
             repositories: RepositoryStore::new(pool.clone()),
             pool: pool.clone(),
             config,
-            github_client: None,
         };
 
         let _ = github_callback(
@@ -726,7 +716,6 @@ mod tests {
             repositories: RepositoryStore::new(pool.clone()),
             pool: pool.clone(),
             config,
-            github_client: None,
         };
 
         let _ = dev_connect(
@@ -757,7 +746,6 @@ mod tests {
             repositories: RepositoryStore::new(pool.clone()),
             pool: pool.clone(),
             config,
-            github_client: None,
         };
 
         let result = dev_connect(
