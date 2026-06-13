@@ -25,7 +25,6 @@ describe("App", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
       if (path === "/api/auth/state") return Response.json({ connected: false, username: null, oauth_configured: false });
-      if (path === "/api/auth/dev-connect") return Response.json({ connected: true, username: "local-dev", oauth_configured: false });
       if (path === "/api/reel/current") return Response.json({ repository: null, empty_reason: "auth_required" });
       if (path === "/api/reel/next") return Response.json({ repository: repo, empty_reason: null });
       if (path === "/api/reel/1/save") return Response.json({ ok: true });
@@ -74,18 +73,16 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(screen.queryByRole("button", { name: "開発用に接続" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "GitHubに接続" })).not.toBeInTheDocument();
   });
 
-  test("OAuth 未設定のローカル環境では開発用接続でリールを表示できる", async () => {
+  test("OAuth 未設定時は設定案内を表示して接続ボタンを出さない", async () => {
     render(<App />);
 
     await screen.findByText("GitHubに接続するとリールを開始できます");
-    expect(screen.getByText("OAuth 未設定のローカル環境では開発用接続でシード候補を使います。")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "開発用に接続" }));
-
-    expect(await screen.findByRole("heading", { name: "okw0204/git-reel" })).toBeInTheDocument();
+    expect(screen.getByText("リールを開始するには GitHub OAuth の設定が必要です。GITHUB_CLIENT_ID と GITHUB_CLIENT_SECRET を設定してサーバーを起動してください。")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "開発用に接続" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "GitHubに接続" })).not.toBeInTheDocument();
   });
 
   test("履歴画面を表示できる", async () => {

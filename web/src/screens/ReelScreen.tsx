@@ -11,7 +11,7 @@ type ReelScreenProps = {
   onAuthChange: (auth: AuthState) => void;
 };
 
-export function ReelScreen({ auth, onAuthChange }: ReelScreenProps) {
+export function ReelScreen({ auth }: ReelScreenProps) {
   const [repository, setRepository] = useState<Repository | null>(null);
   const [emptyReason, setEmptyReason] = useState<string | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -35,14 +35,8 @@ export function ReelScreen({ auth, onAuthChange }: ReelScreenProps) {
   }, [loadCurrent]);
 
   const connect = async () => {
-    if (auth.oauth_configured) {
-      window.location.href = auth.oauth_start_url ?? "/api/auth/github/start";
-      return;
-    }
-
-    const nextAuth = await api.devConnect();
-    applyReel(await api.next());
-    onAuthChange(nextAuth);
+    if (!auth.oauth_configured) return;
+    window.location.href = auth.oauth_start_url ?? "/api/auth/github/start";
   };
 
   const next = useCallback(async () => {
@@ -113,12 +107,14 @@ export function ReelScreen({ auth, onAuthChange }: ReelScreenProps) {
         <p>
           {auth.oauth_configured
             ? "GitHub OAuth で接続すると、保存済み OAuth token を使って実リポジトリ候補を取得します。"
-            : "OAuth 未設定のローカル環境では開発用接続でシード候補を使います。"}
+            : "リールを開始するには GitHub OAuth の設定が必要です。GITHUB_CLIENT_ID と GITHUB_CLIENT_SECRET を設定してサーバーを起動してください。"}
         </p>
-        <button className="primary-button" onClick={connect} type="button">
-          <UserCheck aria-hidden="true" size={18} />
-          {auth.oauth_configured ? "GitHubに接続" : "開発用に接続"}
-        </button>
+        {auth.oauth_configured ? (
+          <button className="primary-button" onClick={connect} type="button">
+            <UserCheck aria-hidden="true" size={18} />
+            GitHubに接続
+          </button>
+        ) : null}
       </section>
     );
   }

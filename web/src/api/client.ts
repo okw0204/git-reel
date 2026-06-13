@@ -16,11 +16,6 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   authState: () => request<AuthState>("/api/auth/state"),
-  devConnect: (username = "local-dev") =>
-    request<AuthState>("/api/auth/dev-connect", {
-      method: "POST",
-      body: JSON.stringify({ username })
-    }),
   current: () => request<ReelResponse>("/api/reel/current"),
   next: () => request<ReelResponse>("/api/reel/next", { method: "POST" }),
   previous: () => request<ReelResponse>("/api/reel/previous", { method: "POST" }),
